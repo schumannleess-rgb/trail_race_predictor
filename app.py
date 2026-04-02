@@ -169,7 +169,7 @@ def render_instructions():
     ### 使用说明
 
     1. **上传赛道GPX文件** - 比赛路线文件，包含海拔和坐标数据
-    2. **上传训练记录** - 你的历史训练数据 (FIT/GPX/JSON格式)
+    2. **上传训练记录** - 你的历史训练数据 (FIT格式)
        - 建议 15-20 个精品 FIT 文件效果最佳
        - 最少 5 个文件即可运行
        - 请剔除带娃散步、信号漂移或纯平路路跑记录
@@ -196,7 +196,7 @@ def render_instructions():
     | 文件类型 | 格式 | 要求 |
     |---------|------|------|
     | 赛道 | GPX | 需要包含海拔数据 |
-    | 训练记录 | FIT/GPX/JSON | 建议 15-20 个精品文件，最少 5 个 |
+    | 训练记录 | FIT | 建议 15-20 个精品文件，最少 5 个 |
     """)
 
 
@@ -286,6 +286,10 @@ def render_analysis():
         st.write(":floppy_disk: 处理上传文件...")
         file_handler = st.session_state.file_handler
 
+        # 清理旧文件，避免累积
+        file_handler.clear_subdir('records')
+        file_handler.clear_subdir('routes')
+
         gpx_path = file_handler.save_uploaded_file(st.session_state.gpx_file, 'routes')
         fit_paths = []
 
@@ -328,8 +332,8 @@ def render_analysis():
         # Step 5: 训练模型
         st.write(":brain: 训练统一机器学习模型...")
 
-        predictor = MLRacePredictor(str(ROOT_DIR / 'records'))
-        if not predictor.analyze_and_train():
+        predictor = MLRacePredictor()
+        if not predictor.train_from_files([str(p) for p in fit_paths]):
             st.error("模型训练失败!")
             status.update(label="训练失败", state="error")
             return

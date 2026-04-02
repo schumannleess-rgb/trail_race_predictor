@@ -22,6 +22,10 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import statistics
 from datetime import datetime
+import zipfile
+import gzip
+import tempfile
+import os
 
 # 导入统一滤波工具
 from .utils import apply_fit_filter, FilterConfig
@@ -259,15 +263,54 @@ class FeatureExtractor:
 
     @staticmethod
     def extract_from_fit(fit_path: Path, segment_length_m: int = 200) -> List[SegmentFeatures]:
-        """直接从 FIT 文件提取分段特征"""
+        """直接从 FIT 文件提取分段特征 (支持 ZIP/GZIP 压缩格式)"""
         try:
             from fitparse import FitFile
         except ImportError:
             print(f"  Warning: fitparse not available, cannot parse {fit_path}")
             return []
 
+        actual_fit_path = fit_path
+        temp_dir = None
+        temp_fit_file = None
+
+        # 读取文件头判断格式
         try:
-            fitfile = FitFile(str(fit_path))
+            with open(fit_path, 'rb') as f:
+                header = f.read(4)
+        except Exception as e:
+            print(f"  Warning: Cannot read file {fit_path.name}: {e}")
+            return []
+
+        try:
+            if header[:2] == b'\x1f\x8b':
+                # GZIP 格式
+                temp_dir = tempfile.mkdtemp()
+                temp_fit_file = Path(temp_dir) / fit_path.stem
+                with gzip.open(fit_path, 'rb') as gz:
+                    with open(temp_fit_file, 'wb') as out:
+                        out.write(gz.read())
+                actual_fit_path = temp_fit_file
+                print(f"    (Decompressed gzip: {fit_path.name})")
+
+            elif header[:4] == b'PK\x03\x04':
+                # ZIP 格式
+                with zipfile.ZipFile(fit_path, 'r') as zip_ref:
+                    temp_dir = tempfile.mkdtemp()
+                    zip_ref.extractall(temp_dir)
+                    extracted_files = list(Path(temp_dir).rglob('*.fit')) + list(Path(temp_dir).rglob('*.FIT'))
+                    if extracted_files:
+                        actual_fit_path = extracted_files[0]
+                        print(f"    (Decompressed zip: {fit_path.name})")
+                    else:
+                        print(f"  Warning: No FIT file found in ZIP archive {fit_path.name}")
+                        return []
+        except Exception as e:
+            print(f"  Warning: Failed to decompress {fit_path.name}: {e}")
+            return []
+
+        try:
+            fitfile = FitFile(str(actual_fit_path))
             
             # 提取记录点
             records = []
@@ -329,12 +372,23 @@ class FeatureExtractor:
                 return []
 
             # 使用与 JSON 相同的处理逻辑
-            return FeatureExtractor._extract_from_time_series(
+            result = FeatureExtractor._extract_from_time_series(
                 timestamps, distances, elevations, heart_rates, segment_length_m
             )
 
+            # 清理临时目录
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+            return result
+
         except Exception as e:
-            print(f"  Warning: Could not extract from FIT {fit_path}: {e}")
+            print(f"  Warning: Could not extract from FIT {fit_path.name}: {e}")
+            # 清理临时目录
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
             return []
 
     @staticmethod
@@ -577,33 +631,43 @@ class FeatureExtractor:
 class MLRacePredictor:
     """基于机器学习的比赛预测器"""
 
-    def __init__(self, records_dir: str):
-        self.records_dir = Path(records_dir)
+    def __init__(self):
         self.predictor = None  # 统一模型
         self.training_stats = {}
         self.all_feature_importance = {}
 
-    def analyze_and_train(self):
-        """分析训练记录并训练统一模型"""
+    def train_from_files(self, file_paths: List[str]) -> bool:
+        """从文件列表训练模型
+        
+        Args:
+            file_paths: FIT/JSON 文件路径列表
+            
+        Returns:
+            训练是否成功
+        """
         print("Training unified ML model from training records...")
 
-        # 扫描 records 目录下的所有 FIT 和 JSON 文件
-        all_files = []
-        
-        # 递归搜索所有文件
-        for ext in ['*.fit', '*.FIT', '*.json', '*.JSON']:
-            all_files.extend(self.records_dir.rglob(ext))
+        if not file_paths:
+            print("  Error: No training files provided")
+            return False
 
-        if not all_files:
-            print("  Error: No training files found in records/")
+        # 转换为 Path 对象并过滤有效文件
+        valid_files = []
+        for fp in file_paths:
+            path = Path(fp)
+            if path.is_file() and path.suffix.lower() in ['.fit', '.json']:
+                valid_files.append(path)
+
+        if not valid_files:
+            print("  Error: No valid FIT/JSON files found")
             return False
 
         # 按文件大小排序，取最大的 20 个
-        all_files_with_size = [(f, f.stat().st_size) for f in all_files if f.is_file()]
-        all_files_with_size.sort(key=lambda x: x[1], reverse=True)
-        selected_files = [f[0] for f in all_files_with_size[:20]]
+        files_with_size = [(f, f.stat().st_size) for f in valid_files]
+        files_with_size.sort(key=lambda x: x[1], reverse=True)
+        selected_files = [f[0] for f in files_with_size[:20]]
 
-        print(f"\n  Found {len(all_files)} files, using top {len(selected_files)} largest files")
+        print(f"\n  Received {len(file_paths)} files, using top {len(selected_files)} largest files")
 
         # 提取所有分段特征
         all_segments = []

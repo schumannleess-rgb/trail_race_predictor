@@ -31,6 +31,22 @@ class FileHandler:
         self.temp_dir = Path(temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
+    def clear_subdir(self, subdir: str = None):
+        """
+        清理子目录中的所有文件
+
+        Args:
+            subdir: 子目录名称
+        """
+        if subdir:
+            target_dir = self.temp_dir / subdir
+        else:
+            target_dir = self.temp_dir
+
+        if target_dir.exists():
+            shutil.rmtree(target_dir, ignore_errors=True)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
     def save_uploaded_file(self, uploaded_file, subdir: str = None) -> str:
         """
         保存上传的文件到临时目录
