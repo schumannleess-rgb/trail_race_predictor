@@ -1,6 +1,6 @@
 # Trail Master - 越野赛成绩预测系统
 
-**版本**: V1.2
+**版本**: V1.2.2
 
 ---
 
@@ -255,17 +255,24 @@ if activity_key in seen_activities:
 
 ```
 trail_race_predictor_v1.2/
-├── app.py                 # Streamlit 主程序
+├── app.py                    # Streamlit 主程序
 ├── core/
-│   ├── predictor.py       # ML 预测器 (LightGBM)
-│   ├── types.py           # 类型定义
-│   └── utils.py           # 滤波工具
+│   ├── predictor/            # ML 预测器包 (LightGBM)
+│   │   ├── __init__.py
+│   │   ├── predictor.py      # 预测器主入口
+│   │   ├── extractor.py     # 特征提取 (含 FIT 缓存)
+│   │   ├── model.py         # LightGBM 模型
+│   │   ├── gpx_parser.py    # GPX 路线解析
+│   │   ├── features.py      # 分段特征定义
+│   │   └── cli.py           # CLI 入口
+│   ├── types.py             # 类型定义
+│   └── utils.py             # 滤波工具
 ├── data/
-│   ├── file_handler.py    # 文件处理
-│   └── data_validator.py  # 数据验证
-├── maps/                  # 赛道 GPX 文件
-├── records/               # 训练记录 FIT 文件
-└── temp/                  # 临时文件
+│   ├── file_handler.py      # 文件处理
+│   └── data_validator.py    # 数据验证
+├── maps/                    # 赛道 GPX 文件
+├── records/                 # 训练记录 FIT 文件
+└── temp/                    # 临时文件
 ```
 
 ---
@@ -291,6 +298,7 @@ MIT License
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| V1.2.2 | 2026-04-05 | 重构 predictor 为包结构，恢复 FIT 文件缓存 |
 | V1.2 | 2026-04-01 | 增强技术文档，提升可信度 |
 | V1.1 | 2026-03-31 | 统一建模，FIT 支持，努力程度量化 |
 | V1.0 | 2026-03-30 | 初始版本，LightGBM 预测 |

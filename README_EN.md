@@ -1,6 +1,6 @@
 # Trail Master - Trail Race Prediction System
 
-**Version**: V1.2
+**Version**: V1.2.2
 
 ---
 
@@ -253,17 +253,24 @@ if activity_key in seen_activities:
 
 ```
 trail_race_predictor_v1.2/
-├── app.py                 # Streamlit main application
+├── app.py                    # Streamlit main application
 ├── core/
-│   ├── predictor.py       # ML predictor (LightGBM)
-│   ├── types.py           # Type definitions
-│   └── utils.py           # Filtering utilities
+│   ├── predictor/            # ML predictor package (LightGBM)
+│   │   ├── __init__.py
+│   │   ├── predictor.py      # Main predictor entry
+│   │   ├── extractor.py     # Feature extraction (with FIT cache)
+│   │   ├── model.py         # LightGBM model
+│   │   ├── gpx_parser.py    # GPX route parser
+│   │   ├── features.py      # Segment feature definitions
+│   │   └── cli.py           # CLI entry
+│   ├── types.py             # Type definitions
+│   └── utils.py             # Filtering utilities
 ├── data/
-│   ├── file_handler.py    # File handling
-│   └── data_validator.py  # Data validation
-├── maps/                  # Route GPX files
-├── records/               # Training FIT files
-└── temp/                  # Temporary files
+│   ├── file_handler.py      # File handling
+│   └── data_validator.py    # Data validation
+├── maps/                    # Route GPX files
+├── records/                 # Training FIT files
+└── temp/                    # Temporary files
 ```
 
 ---
@@ -289,6 +296,7 @@ MIT License
 
 | Version | Date | Changes |
 |---------|------|---------|
+| V1.2.2 | 2026-04-05 | Refactor predictor into package, restore FIT file cache |
 | V1.2 | 2026-04-01 | Enhanced technical documentation, improved credibility |
 | V1.1 | 2026-03-31 | Unified modeling, FIT support, effort quantification |
 | V1.0 | 2026-03-30 | Initial release with LightGBM prediction |
