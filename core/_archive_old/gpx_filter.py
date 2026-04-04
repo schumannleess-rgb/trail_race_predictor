@@ -327,17 +327,16 @@ class GPXFilter:
 
         # 生成新的轨迹点 (使用重采样后的数据)
         for i, dist in enumerate(filtered_distances):
-            # 简化: 使用原始点的经纬度 (实际应用中可以插值)
-            if i < len(raw_points):
-                # 找到对应的原始点
-                raw_idx = np.argmin(np.abs(raw_distances - dist))
-                point = raw_points[raw_idx]
+            # Bug 6 Fix: Remove unnecessary guard condition - argmin works for any index
+            # 找到对应的原始点
+            raw_idx = np.argmin(np.abs(raw_distances - dist))
+            point = raw_points[raw_idx]
 
-                trkpt = ET.SubElement(trkseg, 'trkpt', {
-                    'lat': str(point['lat']),
-                    'lon': str(point['lon'])
-                })
-                ET.SubElement(trkpt, 'ele').text = str(filtered_elevations[i])
+            trkpt = ET.SubElement(trkseg, 'trkpt', {
+                'lat': str(point['lat']),
+                'lon': str(point['lon'])
+            })
+            ET.SubElement(trkpt, 'ele').text = str(filtered_elevations[i])
 
         # 写入文件
         tree = ET.ElementTree(root)

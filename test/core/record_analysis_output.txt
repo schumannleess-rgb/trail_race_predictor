@@ -1,0 +1,44 @@
+﻿================================================================================
+RECORD MESSAGE ANALYSIS
+================================================================================
+
+[1] Extracting RECORD messages...
+    Total RECORDs: 6737
+
+[2] Time Interval Analysis:
+
+    Time Interval Distribution:
+    Interval (s)         Count   Percentage
+    ----------------------------------------
+    1.0                   1539        22.8%
+    2.0                   1698        25.2%
+    3.0                   1315        19.5%
+    4.0                    903        13.4%
+    5.0                    665         9.9%
+    6.0                    347         5.2%
+    7.0                    182         2.7%
+    8.0                     61         0.9%
+    9.0                     17         0.3%
+    10.0                     6         0.1%
+    12.0                     2         0.0%
+    13.0                     1         0.0%
+
+    Statistics:
+      Min interval:    1.0 s
+      Max interval:    13.0 s
+      Mean interval:   2.96 s
+      Median interval: 3.0 s
+      Mode interval:   2.0 s
+python : Traceback (most recent call last):
+所在位置 行:1 字符: 5
++ & { python -u "d:\Garmin\garmin-fitness-v3\projects\race_predictor\tr ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last) 
+   ::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "d:\Garmin\garmin-fitness-v3\projects\race_predictor\trail_race_predicto
+r_v1.2.1\test\core\analyze_record.py", line 123, in <module>
+    print(f"\n    \u26a0\ufe0f  Large gaps (>5s): {len(gaps)} occurrences")
+UnicodeEncodeError: 'gbk' codec can't encode character '\u26a0' in position 6: 
+illegal multibyte sequence

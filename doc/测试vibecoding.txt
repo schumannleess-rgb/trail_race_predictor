@@ -1,0 +1,67 @@
+太懂这种感觉了。“Vibe coding”（跟着直觉和 AI 的节奏狂暴输出代码）在从 0 到 1 构建原型时爽感极强，但一旦进入产品化（从 1 到 10）的重构阶段，往往会陷入“按下葫芦浮起瓢”的无尽 debug 循环。你怀疑核心代码被改坏了，这在重构复杂逻辑（特别是涉及科学计算和机器学习）时非常常见。
+
+从你提供的代码来看，核心架构其实已经很清晰了：`utils.py` 负责底层数学和信号处理，`gpx_filter.py` 处理输入解析，`predictor.py` 承载业务逻辑和 ML 模型，`types.py` 规范数据结构。代码里有明确的物理边界（比如 45% 坡度截断）和容错处理。
+
+为了打破“反复造轮子、修轮子”的死循环，你需要一套**防退化（Regression-proof）的工作流**。在产品化重构之前，给核心代码套上一层“金钟罩”。
+
+以下是一套专为 Vibe coding 转向产品化设计的标准、可复用流程：
+
+### 第一步：建立“黄金标准”快照 (Golden Master Testing)
+既然你怀疑核心代码被改动，第一步**绝对不是**去一行行读代码，而是用真实的输入跑出基准输出，并将其“冻结”。对于数据处理和 ML 预测，这比写几百个单元测试管用得多。
+
+1.  **准备基准数据**：找 2-3 个典型的 GPX 文件（比如你代码里提到的《2025黄岩九峰大师赛最终版.gpx》）和几个有代表性的 FIT 训练文件。
+2.  **生成快照**：用你**最确信功能正常**的旧版本代码跑一遍这些文件。
+3.  **保存结果**：将输出的 `PredictionResult` 或 `filtered_data` 序列化为 JSON 并保存（例如 `baseline_huangyan.json`）。
+
+### 第二步：构建轻量级回归测试台
+在产品化重构期间，你需要一个自动化脚本来对比新旧输出。只要输出一致，你就算把代码重构出花来，核心逻辑也是安全的。
+
+你可以写一个非常简单的测试脚本：
+
+```python
+import json
+from pathlib import Path
+from core.predictor import MLRacePredictor
+
+def test_regression_against_baseline():
+    gpx_path = "tests/data/2025黄岩九峰大师赛最终版.gpx"
+    baseline_path = "tests/baselines/baseline_huangyan.json"
+    
+    # 读取黄金标准
+    with open(baseline_path, 'r', encoding='utf-8') as f:
+        baseline = json.load(f)
+        
+    # 运行当前重构后的代码
+    predictor = MLRacePredictor()
+    predictor.train_from_files(["tests/data/sample_train.fit"]) # 确保训练数据也固定
+    current_result = predictor.predict_race(gpx_path, effort_factor=1.0)
+    
+    # 关键断言 (允许浮点数微小误差)
+    assert abs(current_result['predicted_time_min'] - baseline['summary']['total_time_min']) < 0.1
+    assert abs(current_result['route_info']['total_elevation_gain_m'] - baseline['summary']['total_ascent_m']) < 1.0
+    
+    print("✅ 核心预测逻辑未被破坏！")
+```
+
+### 第三步：剥离与固化“纯函数” (Pure Functions)
+在你的代码中，最容易在重构中被意外破坏，且最难排查的，是那些涉及数学计算的部分。
+
+* **识别纯函数**：查看 `utils.py` 中的 `ElevationFilter.smooth` 和 `apply_gpx_filter`。这些函数只要输入相同的海拔数组，输出就必须永远一致。
+* **固化它们**：针对这些工具函数，写几个极其简单的单元测试。给一个确定的含有噪点的数组，断言滤波后的数组精确匹配。一旦通过，**绝对禁止**在产品化 UI/架构调整时修改 `utils.py`。
+
+### 第四步：控制变量，隔离 ML 模型的随机性
+在验证 `predictor.py` 时，LightGBM 的训练可能会引入微小的随机性，导致你无法确定是“代码改坏了”还是“模型波动”。
+
+* 在跑基准测试时，务必在 LightGBM 的 `params` 中固定随机种子（添加 `'seed': 42`）。
+* 将 `FeatureExtractor` 与 `LightGBMPredictor` 的测试分开。先验证提取出的 `SegmentFeatures` 列表是否与基准完全一致，再去验证预测速度是否一致。
+
+### 总结：可靠的 Vibe Coding 产品化循环
+
+以后你每次用 AI 疯狂输出（Vibe coding）跑通一个新核心 feature 后，立刻执行以下循环：
+
+1.  **Freeze (冻结)**：跑通几个典型用例，把 JSON 结果存到 `tests/baselines/`。
+2.  **Harness (上套)**：写一个简单的对比脚本（如第二步）。
+3.  **Refactor (重构)**：开始你的产品化改写（调整工程结构、加 API 接口、优化性能等）。
+4.  **Verify (验证)**：跑对比脚本。只要亮绿灯，你的改写就是成功的；如果亮红灯，立刻撤销刚才的改动，不用去猜哪里坏了。
+
+这种模式承认了 Vibe coding 带来的快速迭代优势，同时用“黑盒快照测试”的底线兜住了产品化的风险。先去把你旧版本的基准 JSON 跑出来存好，再继续你的重构工作。

@@ -1,0 +1,87 @@
+全部看完了，找到了具体问题。Bug 1 和 Bug 2 实际上都被修复了（第897行用了净高差，`main()` 改成调 `train_from_files`），但 Bug 3/4/5 的修复方式有两个结构性错误。
+
+---
+
+## 问题一：`seg_start_idx` 重置时机错误（Bug 4 相关）
+
+**位置：** 第 509 行、第 683 行
+
+```python
+# 当前修复：
+seg_start_idx = i  # 重置为当前最后一个点
+
+# 导致下一段的 avg_grade 计算：
+avg_grade = np.mean(grades[10:21])  # grades[10] 是上一段的最后一个点，被重复计数了
+```
+
+grades[i] 的含义是"从点 i 到点 i+1 的坡度"。当前段在 i=10 结束，下一段应该从 i=11 开始，但 `seg_start_idx = i` 让下一段从 i=10 起算，多算了一个共享点。
+
+```python
+# 正确：
+seg_start_idx = i + 1  # 下一段从下一个点开始
+```
+
+---
+
+## 问题二：rolling grade 的 slice 上界多算了一个未来点
+
+**位置：** 第 489、663、912、959 行，形如：
+
+```python
+rolling_grade = np.mean(grades[rolling_start_idx : i + 1])
+```
+
+`grades[i]` 的含义是"从点 i 到点 i+1"，也就是当前点往**前方**的坡度，还没走到。过去 500m 的窗口只应包含 `grades[rolling_start_idx : i]`：
+
+```python
+# 正确：
+rolling_grade = np.mean(grades[rolling_start_idx : i])  # 不含 grades[i]
+```
+
+---
+
+## 问题三：每段都执行 O(n) 回溯循环，性能差
+
+当前实现对每个分段都向后遍历最多 1000 个点来找 500m 边界：
+
+```python
+for j in range(i, max(0, i - 1000), -1):  # 每段都跑这个
+    distance_accumulated += ...
+    if distance_accumulated >= 500:
+        break
+```
+
+对一个 10000 点的 FIT 文件（50km，1s 一个点），约 250 个分段 × 最多 1000 次迭代 = 25 万次循环，而且随着 i 增大，回溯深度越来越大。
+
+正确做法是用 deque 维护滑动窗口，每个点只进出一次，整体 O(n)：
+
+```python
+from collections import deque
+
+window = deque()   # 存 (distance_m, grade) 对
+window_distance = 0.0
+
+for i in range(1, len(timestamps)):
+    step_dist = distances[i] - distances[i-1]
+    window.append((step_dist, grades[i]))
+    window_distance += step_dist
+
+    # 从左侧弹出超出 500m 的部分
+    while window_distance - window[0][0] >= 500:
+        old_dist, _ = window.popleft()
+        window_distance -= old_dist
+
+    rolling_grade = np.mean([g for _, g in window])
+
+    # 正常的分段逻辑...
+```
+
+---
+
+## 总结
+
+| 问题 | 影响 | 修复方式 |
+|------|------|---------|
+| `seg_start_idx = i` 应为 `i + 1` | avg_grade 每段多算一个边界点 | 改为 `seg_start_idx = i + 1` |
+| rolling slice 用 `[...:i+1]` | 把下一步的坡度算进了过去窗口 | 改为 `[...:i]` |
+| 每段 O(n) 回溯 | 长活动性能差，10万点以上会明显变慢 | 改用 deque 滑动窗口 |

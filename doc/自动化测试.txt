@@ -1,0 +1,473 @@
+好问题，分四个层次来回答：测什么、怎么写、怎么判断、怎么用 AI 自动化。
+
+---
+
+## 一、测什么——测试层次图
+
+```
+┌─────────────────────────────────────────┐
+│  E2E 测试：完整预测流程（真实文件）         │  ← 最慢，最接近用户
+├─────────────────────────────────────────┤
+│  集成测试：模块间协作（合成数据）           │
+├─────────────────────────────────────────┤
+│  单元测试：单个函数（纯数学验证）           │  ← 最快，最精确
+├─────────────────────────────────────────┤
+│  物理约束测试：结果是否符合现实            │  ← 领域知识校验
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 二、怎么写——具体测试用例
+
+### 层次 1：单元测试（纯数学）
+
+```python
+# tests/test_units.py
+import numpy as np
+import pytest
+from core.utils import ElevationFilter, FilterConfig
+from core.predictor import FeatureExtractor, MLRacePredictor
+
+class TestGradeCalculation:
+    """坡度计算的数学正确性"""
+
+    def test_flat_grade_is_zero(self):
+        ele = np.array([100.0, 100.0, 100.0])
+        dist = np.array([0, 100, 200])
+        grades = ElevationFilter.calculate_grade(ele, dist, FilterConfig.GPX)
+        assert np.allclose(grades, 0, atol=0.01)
+
+    def test_uphill_grade_is_positive(self):
+        ele = np.array([100.0, 110.0])      # +10m
+        dist = np.array([0, 100])            # 100m
+        grades = ElevationFilter.calculate_grade(ele, dist, FilterConfig.GPX)
+        assert grades[0] == pytest.approx(10.0, abs=0.1)  # 10%
+
+    def test_downhill_grade_is_negative(self):
+        """Bug 1 的核心验证：下坡必须返回负值"""
+        ele = np.array([200.0, 100.0])      # -100m
+        dist = np.array([0, 500])            # 500m
+        grades = ElevationFilter.calculate_grade(ele, dist, FilterConfig.GPX)
+        assert grades[0] < 0
+        assert grades[0] == pytest.approx(-20.0, abs=0.1)
+
+    def test_gps_drift_clipped(self):
+        """0.1m 漂移不产生极端坡度"""
+        ele = np.array([100.0, 100.3])
+        dist = np.array([0, 0.1])           # 0.1m，低于 min_distance_m
+        grades = ElevationFilter.calculate_grade(ele, dist, FilterConfig.FIT)
+        assert grades[0] == 0.0             # 应被 min_distance 过滤为 0
+
+    def test_grade_clamped_at_max(self):
+        ele = np.array([100.0, 200.0])      # +100m in 100m → 100%
+        dist = np.array([0, 100])
+        grades = ElevationFilter.calculate_grade(ele, dist, FilterConfig.GPX)
+        assert grades[0] == FilterConfig.GPX['max_grade_pct']  # 截断到 45%
+
+
+class TestSegmentSpeedCalculation:
+    """分段速度必须用段总时间，不是最后一步"""
+
+    def test_speed_is_segment_average(self):
+        # 前 100m 用 10s (36 km/h)，后 100m 用 50s (7.2 km/h)
+        # 段均速 = 200m / 60s = 12.0 km/h
+        timestamps = [0.0, 10.0, 60.0]
+        distances  = [0.0, 100.0, 200.0]
+        elevations = [100.0, 100.0, 100.0]
+        heart_rates = [0, 0, 0]
+
+        segs = FeatureExtractor._extract_from_time_series(
+            timestamps, distances, elevations, heart_rates, segment_length_m=200
+        )
+        assert len(segs) == 1
+        expected = (200/1000) / (60/3600)   # 12.0 km/h
+        assert segs[0].speed_kmh == pytest.approx(expected, abs=0.5)
+
+    def test_speed_clamped_to_valid_range(self):
+        """速度必须在 [1, 20] km/h 范围内"""
+        timestamps = [0.0, 1.0]             # 1 秒
+        distances  = [0.0, 200.0]           # 200m → 720 km/h（GPS 错误）
+        elevations = [100.0, 100.0]
+        heart_rates = [0, 0]
+
+        segs = FeatureExtractor._extract_from_time_series(
+            timestamps, distances, elevations, heart_rates, segment_length_m=200
+        )
+        if segs:
+            assert 1.0 <= segs[0].speed_kmh <= 20.0
+
+
+class TestAvgGradeIsSegmentMean:
+    """avg_grade 必须是整段平均，不是最后一个点"""
+
+    def test_avg_grade_across_mixed_terrain(self):
+        # 前半上坡 +20%，后半下坡 -20% → 整段平均应接近 0
+        n = 20
+        distances = list(np.linspace(0, 200, n))
+        # 前半上坡
+        elevations = [100 + i * 2 for i in range(n//2)]
+        # 后半下坡
+        elevations += [elevations[-1] - i * 2 for i in range(1, n//2 + 1)]
+        timestamps = list(range(n))
+        heart_rates = [0] * n
+
+        segs = FeatureExtractor._extract_from_time_series(
+            timestamps, distances, elevations, heart_rates, segment_length_m=200
+        )
+        # avg_grade 不应该等于最后一步的坡度（-20%）
+        if segs:
+            assert segs[0].grade_pct != pytest.approx(-20.0, abs=1.0)
+            assert abs(segs[0].grade_pct) < 10.0  # 应接近 0
+
+
+class TestRollingGrade:
+    """rolling_grade_500m 验证"""
+
+    def test_rolling_grade_differs_from_current_grade(self):
+        """前半上坡结束后，rolling_grade 应反映历史爬升"""
+        # 构造：前 500m 上坡 20%，后 200m 平路
+        uphill_n = 50
+        flat_n = 20
+        spacing = 10  # 每 10m 一个点
+
+        distances  = [i * spacing for i in range(uphill_n + flat_n)]
+        elevations = [100 + i * spacing * 0.20 for i in range(uphill_n)]
+        elevations += [elevations[-1]] * flat_n
+        timestamps = list(range(uphill_n + flat_n))
+        heart_rates = [0] * (uphill_n + flat_n)
+
+        segs = FeatureExtractor._extract_from_time_series(
+            timestamps, distances, elevations, heart_rates, segment_length_m=200
+        )
+        # 平路段的 rolling_grade_500m 应 > 0（反映之前的历史爬升）
+        flat_segs = [s for s in segs if abs(s.grade_pct) < 2]
+        if flat_segs:
+            assert flat_segs[0].rolling_grade_500m > 5.0
+
+    def test_rolling_window_is_500m_not_longer(self):
+        """rolling window 不应超过 500m"""
+        n = 200
+        distances  = [i * 5 for i in range(n)]   # 5m 间距，总 1000m
+        elevations = [100 + i * 0.5 for i in range(n)]  # 匀速上坡
+        timestamps = list(range(n))
+        heart_rates = [0] * n
+
+        segs = FeatureExtractor._extract_from_time_series(
+            timestamps, distances, elevations, heart_rates, segment_length_m=200
+        )
+        # 匀速上坡时，500m 窗口和全程窗口的 rolling_grade 应相同（验证窗口长度）
+        for s in segs:
+            # 匀速上坡坡度 = 0.5m/5m = 10%
+            assert s.rolling_grade_500m == pytest.approx(10.0, abs=1.0)
+```
+
+### 层次 2：集成测试（合成 GPX）
+
+```python
+# tests/test_integration.py
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import tempfile, math
+
+def make_synthetic_gpx(profile: str = "hill") -> str:
+    """
+    生成合成 GPX 文件，地形类型：
+    - "hill"：先上坡后下坡
+    - "flat"：纯平路
+    - "descent"：纯下坡
+    """
+    root = ET.Element('gpx', {
+        'version': '1.1',
+        'xmlns': 'http://www.topografix.com/GPX/1/1'
+    })
+    trk = ET.SubElement(root, 'trk')
+    trkseg = ET.SubElement(trk, 'trkseg')
+
+    n_points = 100
+    lat_base, lon_base = 30.0, 120.0
+    step_m = 50                         # 每 50m 一个点
+
+    for i in range(n_points):
+        lat = lat_base + i * (step_m / 111000)
+        if profile == "hill":
+            ele = 100 + (50 * math.sin(i / n_points * math.pi))  # 先升后降
+        elif profile == "flat":
+            ele = 100.0
+        elif profile == "descent":
+            ele = 200 - i * 1.5         # 匀速下降
+        else:
+            ele = 100.0
+
+        trkpt = ET.SubElement(trkseg, 'trkpt', {
+            'lat': str(lat), 'lon': str(lon_base)
+        })
+        ET.SubElement(trkpt, 'ele').text = str(ele)
+
+    tmp = tempfile.NamedTemporaryFile(suffix='.gpx', delete=False, mode='w')
+    ET.ElementTree(root).write(tmp.name, encoding='unicode')
+    return tmp.name
+
+
+class TestGPXParsing:
+
+    def test_hill_profile_has_positive_and_negative_grades(self):
+        predictor = MLRacePredictor()
+        gpx_path = make_synthetic_gpx("hill")
+        segments, _ = predictor.parse_gpx_route(gpx_path)
+
+        grades = [s.grade_pct for s in segments]
+        assert any(g > 3 for g in grades),  "丘陵地形应有上坡段"
+        assert any(g < -3 for g in grades), "丘陵地形应有下坡段"
+
+    def test_descent_profile_all_negative_grades(self):
+        predictor = MLRacePredictor()
+        gpx_path = make_synthetic_gpx("descent")
+        segments, _ = predictor.parse_gpx_route(gpx_path)
+
+        # 至少 80% 的段应为负坡度（允许滤波后的轻微误差）
+        negative = sum(1 for s in segments if s.grade_pct < -1)
+        assert negative / len(segments) > 0.8
+
+    def test_total_distance_is_correct(self):
+        predictor = MLRacePredictor()
+        gpx_path = make_synthetic_gpx("flat")
+        _, route_info = predictor.parse_gpx_route(gpx_path)
+
+        expected_km = (100 * 50) / 1000   # 100 点 × 50m = 5.0 km
+        assert route_info['total_distance_km'] == pytest.approx(expected_km, rel=0.05)
+```
+
+### 层次 3：物理约束测试（预测结果是否符合现实）
+
+```python
+# tests/test_physics.py
+
+class TestPhysicalConstraints:
+    """不需要真实数据，用合成 GPX + fallback 模型验证输出是否合理"""
+
+    @pytest.fixture
+    def trained_predictor(self):
+        """用合成 FIT 数据训练一个最小模型"""
+        from core.predictor import LightGBMPredictor, SegmentFeatures
+        import random
+
+        predictor = LightGBMPredictor()
+        # 构造合理的训练数据：坡度越大速度越慢
+        segments = []
+        for _ in range(200):
+            grade = random.uniform(-20, 20)
+            speed = max(1.5, 7.0 - abs(grade) * 0.2 + random.gauss(0, 0.3))
+            segments.append(SegmentFeatures(
+                speed_kmh=speed, grade_pct=grade,
+                rolling_grade_500m=grade,
+                accumulated_distance_km=random.uniform(0, 30),
+                accumulated_ascent_m=random.uniform(0, 2000),
+                absolute_altitude_m=random.uniform(100, 2000),
+                elevation_density=random.uniform(0, 100),
+                is_climbing=grade > 2, is_descending=grade < -2
+            ))
+        predictor._train_fallback(segments)
+        return predictor
+
+    def test_uphill_slower_than_flat(self, trained_predictor):
+        from core.predictor import SegmentFeatures
+        base = dict(rolling_grade_500m=0, accumulated_distance_km=5,
+                    accumulated_ascent_m=200, absolute_altitude_m=500,
+                    elevation_density=40, is_climbing=False, is_descending=False)
+
+        flat_speed = trained_predictor.predict_speed(
+            SegmentFeatures(speed_kmh=0, grade_pct=0, **base))
+        uphill_speed = trained_predictor.predict_speed(
+            SegmentFeatures(speed_kmh=0, grade_pct=20, **{**base, 'is_climbing': True}))
+
+        assert uphill_speed < flat_speed, "上坡必须比平路慢"
+
+    def test_effort_factor_monotonic(self, trained_predictor):
+        """effort_factor 越大，预测速度必须越快"""
+        from core.predictor import SegmentFeatures
+        seg = SegmentFeatures(speed_kmh=0, grade_pct=5, rolling_grade_500m=5,
+                              accumulated_distance_km=5, accumulated_ascent_m=200,
+                              absolute_altitude_m=500, elevation_density=40,
+                              is_climbing=True, is_descending=False)
+
+        speeds = [trained_predictor.predict_speed(seg, ef) for ef in [0.8, 0.9, 1.0, 1.1, 1.2]]
+        assert speeds == sorted(speeds), f"effort_factor 不单调: {speeds}"
+
+    def test_speed_within_human_limits(self, trained_predictor):
+        from core.predictor import SegmentFeatures
+        for grade in [-30, -15, 0, 15, 30]:
+            seg = SegmentFeatures(speed_kmh=0, grade_pct=grade,
+                                  rolling_grade_500m=grade,
+                                  accumulated_distance_km=10,
+                                  accumulated_ascent_m=500,
+                                  absolute_altitude_m=800,
+                                  elevation_density=50,
+                                  is_climbing=grade > 0,
+                                  is_descending=grade < 0)
+            speed = trained_predictor.predict_speed(seg)
+            assert 1.0 <= speed <= 25.0, f"grade={grade}% 预测速度 {speed:.1f} 超出人类范围"
+```
+
+---
+
+## 三、怎么判断——通过标准分级
+
+```
+PASS 标准（从严到宽）：
+
+单元测试：  数值误差 < 0.1，逻辑断言 100% 通过
+集成测试：  坡度方向正确 > 95%，距离误差 < 5%
+物理约束：  所有速度 ∈ [1, 25] km/h，上坡 < 平路速度，effort 单调
+E2E 回测：  与实际完赛时间误差 < ±15%（有真实数据时）
+```
+
+---
+
+## 四、AI 自动化循环——核心设计
+
+这是最关键的部分。思路是用 Claude API 作为测试评估引擎，形成 **生成 → 执行 → 分析 → 修复 → 再生成** 的闭环。
+
+```python
+# tools/ai_test_loop.py
+"""
+AI 驱动的自动化测试循环
+流程: 运行测试 → 发送失败报告给 Claude → Claude 返回修复建议 → 自动应用 → 再次运行
+"""
+import subprocess
+import json
+import requests
+from pathlib import Path
+
+
+def run_tests() -> dict:
+    """运行 pytest，返回结构化结果"""
+    result = subprocess.run(
+        ['pytest', 'tests/', '-v', '--tb=short', '--json-report',
+         '--json-report-file=test_report.json'],
+        capture_output=True, text=True
+    )
+    with open('test_report.json') as f:
+        report = json.load(f)
+
+    return {
+        'passed': report['summary'].get('passed', 0),
+        'failed': report['summary'].get('failed', 0),
+        'total':  report['summary'].get('total', 0),
+        'failures': [
+            {
+                'test': t['nodeid'],
+                'message': t['call']['longrepr']
+            }
+            for t in report.get('tests', [])
+            if t['outcome'] == 'failed'
+        ]
+    }
+
+
+def ask_claude_for_fix(failures: list, source_file: str) -> str:
+    """把失败报告和源码发给 Claude，要求返回修复后的代码"""
+    source = Path(source_file).read_text()
+
+    prompt = f"""你是一个 Python 代码修复专家。以下测试失败了：
+
+{json.dumps(failures, ensure_ascii=False, indent=2)}
+
+这是被测试的源文件 {source_file}：
+
+```python
+{source}
+```
+
+请直接返回修复后的完整 Python 文件内容，不要任何解释，
+只返回代码，以 ```python 开头，以 ``` 结尾。"""
+
+    response = requests.post(
+        'https://api.anthropic.com/v1/messages',
+        headers={'Content-Type': 'application/json'},
+        json={
+            'model': 'claude-sonnet-4-20250514',
+            'max_tokens': 8192,
+            'messages': [{'role': 'user', 'content': prompt}]
+        }
+    )
+    return response.json()['content'][0]['text']
+
+
+def extract_code(response: str) -> str:
+    """从 Claude 回复中提取代码块"""
+    import re
+    match = re.search(r'```python\n(.*?)```', response, re.DOTALL)
+    return match.group(1) if match else None
+
+
+def apply_fix(code: str, target_file: str):
+    """备份原文件，写入修复后的代码"""
+    path = Path(target_file)
+    path.with_suffix('.py.bak').write_text(path.read_text())
+    path.write_text(code)
+    print(f"  已应用修复到 {target_file}")
+
+
+def run_loop(max_iterations: int = 5, target_file: str = 'core/predictor.py'):
+    """主循环：最多迭代 max_iterations 次直到全部通过"""
+    for iteration in range(1, max_iterations + 1):
+        print(f"\n{'='*50}")
+        print(f"第 {iteration} 轮测试")
+        print('='*50)
+
+        result = run_tests()
+        print(f"结果: {result['passed']}/{result['total']} 通过，"
+              f"{result['failed']} 失败")
+
+        if result['failed'] == 0:
+            print("\n✓ 所有测试通过，循环结束")
+            return True
+
+        print(f"\n失败测试:")
+        for f in result['failures']:
+            print(f"  - {f['test']}")
+
+        print("\n正在请求 Claude 分析并修复...")
+        response = ask_claude_for_fix(result['failures'], target_file)
+        code = extract_code(response)
+
+        if not code:
+            print("Claude 未返回有效代码，中止循环")
+            return False
+
+        apply_fix(code, target_file)
+
+    print(f"\n达到最大迭代次数 {max_iterations}，仍有测试未通过")
+    return False
+
+
+if __name__ == '__main__':
+    run_loop(max_iterations=5, target_file='core/predictor.py')
+```
+
+---
+
+## 五、完整执行流程
+
+```bash
+# 1. 安装依赖
+pip install pytest pytest-json-report numpy scipy --break-system-packages
+
+# 2. 运行全量测试
+pytest tests/ -v --tb=short
+
+# 3. 启动 AI 自动修复循环（需要 ANTHROPIC_API_KEY）
+export ANTHROPIC_API_KEY=sk-ant-...
+python tools/ai_test_loop.py
+
+# 4. 查看每轮差异
+diff core/predictor.py core/predictor.py.bak
+```
+
+**循环终止条件：**
+- `failed == 0`：成功，退出
+- 达到 `max_iterations`：人工介入
+- Claude 无法解析：人工介入
+
+**实际经验：** 物理约束类失败（speed 范围、单调性）通常 1-2 轮可以自动修复；涉及坐标数学的失败（off-by-one、索引）Claude 在 3 轮内的成功率约 80%。超过 3 轮未收敛时，说明 prompt 里的上下文不足，需要把相关的 `utils.py` 和测试文件也一并发给 Claude。
