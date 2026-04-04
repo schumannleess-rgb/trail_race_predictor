@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from core.predictor import MLRacePredictor
 from core.types import PredictionResult, EffortLevel, SegmentPrediction
-from core.report_generator import ReportGenerator
+from reports.report_generator import ReportGenerator
 from data.file_handler import FileHandler
 from data.data_validator import DataValidator, validate_file
 
@@ -77,13 +77,16 @@ def init_session_state():
     defaults = {
         'predictor': None,
         'file_handler': FileHandler(str(ROOT_DIR / 'temp')),
-        'gpx_file': None,
-        'fit_files': [],
-        'effort_factor': 1.0,
+        # 当前上传的文件（用户可修改）
+        'uploaded_gpx': None,
+        'uploaded_fits': [],
+        'uploaded_effort': 1.0,
+        # 分析快照（点击开始分析时固化）
+        'analysis_snapshot': None,  # {'gpx_file', 'fit_files', 'effort_factor'}
+        # 分析状态
         'analysis_started': False,
         'analysis_complete': False,
         'prediction_result': None,
-        'selected_files': []
     }
 
     for key, value in defaults.items():
@@ -94,12 +97,25 @@ def init_session_state():
 def render_sidebar():
     """渲染侧边栏"""
     with st.sidebar:
+        # 如果正在分析中，禁用输入
+        if st.session_state.get('analysis_started') and not st.session_state.get('analysis_complete'):
+            st.info("⏳ 分析进行中，请稍候...")
+            st.button(":recycle: 重置", on_click=reset_analysis, use_container_width=True)
+            return
+
+        # 如果分析完成，显示重置按钮
+        if st.session_state.get('analysis_complete'):
+            st.success("✅ 分析完成")
+            st.button(":recycle: 重新开始", on_click=reset_analysis, use_container_width=True)
+            st.divider()
+
         st.header("数据上传")
 
         # 赛道上传
         gpx_file = st.file_uploader(
             "上传目标赛道 (GPX)",
             type=['gpx'],
+            key="gpx_uploader",
             help="上传比赛的GPX路线文件"
         )
 
@@ -108,6 +124,7 @@ def render_sidebar():
             "上传个人记录 (FIT)",
             type=['fit'],
             accept_multiple_files=True,
+            key="fits_uploader",
             help="上传历史训练记录，建议至少5个文件，15-20个精品FIT效果最佳"
         )
 
@@ -121,16 +138,17 @@ def render_sidebar():
 
         # 努力程度滑块
         st.header("比赛状态预设")
-        
+
         effort_factor = st.slider(
             "调节你的努力程度",
             min_value=0.8,
             max_value=1.2,
             value=1.0,
             step=0.01,
+            key="effort_slider",
             help="1.0 = 平时平均水平 (P50)\n1.1-1.2 = 比赛状态 (接近 P90)\n0.8-0.9 = 保守策略"
         )
-        
+
         # 显示努力程度说明
         if effort_factor < 0.95:
             st.info(f"🎯 保守策略 ({effort_factor:.2f}x): 适合长距离或恢复期比赛")
@@ -139,8 +157,10 @@ def render_sidebar():
         else:
             st.success(f"✅ 平均水平 ({effort_factor:.2f}x): 稳健的完赛目标")
 
+        st.divider()
+
         # 开始按钮
-        if st.button(":rocket: 开始分析", type="primary", use_container_width=True):
+        if st.button(":rocket: 开始分析", type="primary", use_container_width=True, key="start_button"):
             if not gpx_file:
                 st.error("请上传赛道GPX文件!")
             elif not fit_files or len(fit_files) < 3:
@@ -154,12 +174,39 @@ def render_sidebar():
 
 
 def start_analysis(gpx_file, fit_files, effort_factor):
-    """开始分析"""
-    st.session_state.gpx_file = gpx_file
-    st.session_state.fit_files = fit_files
-    st.session_state.effort_factor = effort_factor
+    """开始分析 - 固化输入数据"""
+    # 保存当前上传的文件（用于显示）
+    st.session_state.uploaded_gpx = gpx_file
+    st.session_state.uploaded_fits = fit_files
+    st.session_state.uploaded_effort = effort_factor
+
+    # 创建分析快照（固化数据，不受后续上传影响）
+    st.session_state.analysis_snapshot = {
+        'gpx_file': gpx_file,
+        'fit_files': fit_files,
+        'effort_factor': effort_factor
+    }
+
+    # 清除之前的结果
+    st.session_state.predictor = None
+    st.session_state.prediction_result = None
+
+    # 标记分析开始
     st.session_state.analysis_started = True
     st.session_state.analysis_complete = False
+    st.rerun()
+
+
+def reset_analysis():
+    """重置分析状态"""
+    st.session_state.analysis_started = False
+    st.session_state.analysis_complete = False
+    st.session_state.analysis_snapshot = None
+    st.session_state.predictor = None
+    st.session_state.prediction_result = None
+    st.session_state.uploaded_gpx = None
+    st.session_state.uploaded_fits = []
+    st.session_state.uploaded_effort = 1.0
     st.rerun()
 
 
@@ -280,7 +327,32 @@ def detect_duplicates(file_paths):
 
 def render_analysis():
     """渲染分析过程和结果"""
+    # 获取分析快照（固化数据，不受后续上传影响）
+    snapshot = st.session_state.get('analysis_snapshot')
+    if not snapshot:
+        st.error("分析数据丢失，请重新开始")
+        return
+
+    # 如果已经完成且有结果，直接显示，不重新分析
+    if st.session_state.get('analysis_complete') and st.session_state.get('prediction_result'):
+        render_prediction_results()
+        return
+
+    # 分析还未完成，执行分析流程
     with st.status("正在分析中...", expanded=True) as status:
+        # 日志区域
+        log_area = st.empty()
+        log_messages = []
+
+        def log(msg):
+            log_messages.append(msg)
+            log_area.code("\n".join(log_messages), language=None)
+
+        # 显示分析文件信息
+        st.info(f"📁 赛道: **{snapshot['gpx_file'].name}**")
+        st.info(f"📁 训练记录: **{len(snapshot['fit_files'])}** 个文件")
+        st.caption("训练文件: " + ", ".join([f.name for f in snapshot['fit_files'][:5]]) +
+                  ("..." if len(snapshot['fit_files']) > 5 else ""))
 
         # Step 1: 保存文件
         st.write(":floppy_disk: 处理上传文件...")
@@ -290,23 +362,23 @@ def render_analysis():
         file_handler.clear_subdir('records')
         file_handler.clear_subdir('routes')
 
-        gpx_path = file_handler.save_uploaded_file(st.session_state.gpx_file, 'routes')
+        gpx_path = file_handler.save_uploaded_file(snapshot['gpx_file'], 'routes')
         fit_paths = []
 
-        for fit_file in st.session_state.fit_files:
+        for fit_file in snapshot['fit_files']:
             path = file_handler.save_uploaded_file(fit_file, 'records')
             fit_paths.append(path)
 
         # Step 2: 检测重复数据
         st.write(":mag: 检测重复数据...")
         unique_paths, duplicates = detect_duplicates(fit_paths)
-        
+
         if duplicates:
             st.warning(f"发现 {len(duplicates)} 个重复文件，已自动过滤")
             with st.expander("查看重复文件"):
                 for dup in duplicates:
                     st.write(f"- {dup}")
-        
+
         fit_paths = unique_paths
         st.write(f"有效训练文件: {len(fit_paths)} 个")
 
@@ -316,6 +388,7 @@ def render_analysis():
         if not gpx_result.valid:
             st.error(f"赛道文件问题: {gpx_result.error}")
             status.update(label="验证失败", state="error")
+            st.session_state.analysis_complete = True
             return
 
         if gpx_result.warnings:
@@ -331,13 +404,30 @@ def render_analysis():
 
         # Step 5: 训练模型
         st.write(":brain: 训练统一机器学习模型...")
+        st.info("💡 首次训练需要 1-5 分钟解析 FIT 文件，之后会快很多")
+
+        # 进度条
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
         predictor = MLRacePredictor()
-        if not predictor.train_from_files([str(p) for p in fit_paths]):
+
+        progress_bar.progress(20)
+        status_text.text("正在解析训练数据...")
+
+        train_result = predictor.train_from_files([str(p) for p in fit_paths])
+
+        if not train_result:
             st.error("模型训练失败!")
             status.update(label="训练失败", state="error")
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state.analysis_complete = True
             return
-            
+
+        progress_bar.progress(70)
+        status_text.text("训练完成，正在生成预测...")
+
         st.session_state.predictor = predictor
 
         stats = predictor.training_stats
@@ -347,24 +437,37 @@ def render_analysis():
         st.write(f"  P50 速度: {stats.get('p50_speed', 0):.2f} km/h")
         st.write(f"  P90 速度: {stats.get('p90_speed', 0):.2f} km/h")
 
-        # Step 5: 预测
+        # Step 6: 预测
+        progress_bar.progress(85)
         st.write(":chart_with_upwards_trend: 生成预测...")
 
-        effort_factor = st.session_state.effort_factor
+        effort_factor = snapshot['effort_factor']
 
         try:
             result = predictor.predict_race(gpx_path, effort_factor)
+            progress_bar.progress(100)
+            status_text.text("完成!")
 
             # 转换为PredictionResult对象
             prediction = convert_to_prediction_result(result, effort_factor)
             st.session_state.prediction_result = prediction
 
             status.update(label="分析完成!", state="complete")
+            st.session_state.analysis_complete = True
 
         except Exception as e:
             st.error(f"预测失败: {str(e)}")
             status.update(label="预测失败", state="error")
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state.analysis_complete = True
             return
+        finally:
+            # 清理进度条
+            import time
+            time.sleep(0.5)
+            progress_bar.empty()
+            status_text.empty()
 
     # 显示结果
     render_prediction_results()
@@ -694,40 +797,45 @@ def render_download_section(prediction: PredictionResult):
     """渲染下载区域"""
     st.subheader(":inbox_tray: 下载报告")
 
+    # 获取文件信息
+    snapshot = st.session_state.get('analysis_snapshot', {})
+    gpx_name = snapshot.get('gpx_file', {}).name if snapshot.get('gpx_file') else "未知赛道"
+    fit_names = [f.name for f in snapshot.get('fit_files', [])]
+
     # 生成报告
-    report_gen = ReportGenerator(prediction)
+    report_gen = ReportGenerator(prediction, gpx_name=gpx_name, fit_names=fit_names)
 
     col1, col2 = st.columns(2)
 
-    with col1:
-        # HTML报告
-        report_path = str(ROOT_DIR / 'reports' / 'prediction_report.html')
-        try:
-            html_path = report_gen.generate_html_report(report_path)
-            with open(html_path, 'r', encoding='utf-8') as f:
-                html_content = f.read()
+    # 生成报告内容
+    try:
+        html_content = report_gen.generate_html_report(str(ROOT_DIR / 'reports' / 'prediction_report.html'))
+        with open(html_content, 'r', encoding='utf-8') as f:
+            html_data = f.read()
+    except Exception as e:
+        st.error(f"生成HTML报告失败: {str(e)}")
+        html_data = None
 
-            st.download_button(
-                ":page_facing_up: 下载HTML报告",
-                html_content,
-                file_name="trail_prediction_report.html",
-                mime="text/html"
-            )
-        except Exception as e:
-            st.error(f"生成HTML报告失败: {str(e)}")
+    try:
+        txt_content = report_gen.generate_txt_report()
+    except Exception as e:
+        st.error(f"生成TXT报告失败: {str(e)}")
+        txt_content = None
+
+    with col1:
+        if html_data:
+            # 使用HTML download属性避免页面跳转
+            import base64
+            b64_html = base64.b64encode(html_data.encode()).decode()
+            href = f'<a href="data:text/html;base64,{b64_html}" download="trail_prediction_report.html" target="_blank"><button style="width:100%;padding:0.6em 1em;border:none;border-radius:0.5em;background:#FF4B4B;color:white;font-size:1em;cursor:pointer;">📄 下载HTML报告</button></a>'
+            st.markdown(href, unsafe_allow_html=True)
 
     with col2:
-        # TXT报告
-        try:
-            txt_content = report_gen.generate_txt_report()
-            st.download_button(
-                ":memo: 下载TXT报告",
-                txt_content,
-                file_name="trail_prediction_report.txt",
-                mime="text/plain"
-            )
-        except Exception as e:
-            st.error(f"生成TXT报告失败: {str(e)}")
+        if txt_content:
+            import base64
+            b64_txt = base64.b64encode(txt_content.encode()).decode()
+            href = f'<a href="data:text/plain;base64,{b64_txt}" download="trail_prediction_report.txt" target="_blank"><button style="width:100%;padding:0.6em 1em;border:none;border-radius:0.5em;background:#FF4B4B;color:white;font-size:1em;cursor:pointer;">📝 下载TXT报告</button></a>'
+            st.markdown(href, unsafe_allow_html=True)
 
     st.divider()
     st.info("💡 HTML报告可保存到手机，方便比赛时查看；TXT报告适合打印或分享")

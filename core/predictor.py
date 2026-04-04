@@ -26,9 +26,14 @@ import zipfile
 import gzip
 import tempfile
 import os
+from collections import deque
 
 # 导入统一滤波工具
-from .utils import apply_fit_filter, FilterConfig
+from .utils import apply_fit_filter, apply_gpx_filter, FilterConfig
+
+# Speed filtering thresholds for rest detection
+MOVING_THRESHOLD_KMH = 1.5   # Below this = rest/stop
+GPS_ERROR_THRESHOLD_KMH = 18 # Above this = GPS artifact
 
 
 @dataclass
@@ -130,6 +135,7 @@ class LightGBMPredictor:
             'bagging_freq': 5,
             'verbose': -1,
             'min_data': 1,  # 允许小数据集训练
+            'seed': 42,  # 固定随机种子
         }
 
         # 训练模型
@@ -261,14 +267,65 @@ class LightGBMPredictor:
 class FeatureExtractor:
     """特征提取器 - 从 JSON/FIT 文件提取分段特征"""
 
+    # 解析缓存目录
+    _CACHE_DIR = Path.home() / '.trail_race_predictor' / 'fit_cache'
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def _get_cache_path(cls, fit_path: Path) -> Path:
+        """获取缓存文件路径"""
+        import hashlib
+        # 用文件内容的hash作为缓存key (避免mtime变化导致缓存失效)
+        if fit_path.exists():
+            with open(fit_path, 'rb') as f:
+                content_hash = hashlib.md5(f.read()).hexdigest()[:16]
+        else:
+            content_hash = 'missing'
+        return cls._CACHE_DIR / f"{fit_path.stem}_{content_hash}.pkl"
+
+    @classmethod
+    def _get_cached_data(cls, fit_path: Path) -> Optional[Tuple]:
+        """尝试从缓存加载解析数据"""
+        cache_path = cls._get_cache_path(fit_path)
+        print(f"    [CACHE CHECK] {fit_path.name}")
+        print(f"    [CACHE PATH] {cache_path}")
+        if cache_path.exists():
+            try:
+                import pickle
+                with open(cache_path, 'rb') as f:
+                    data = pickle.load(f)
+                print(f"    [CACHE HIT] {fit_path.name}")
+                return data
+            except Exception as e:
+                print(f"    [CACHE ERROR] {e}")
+        print(f"    [CACHE MISS] {fit_path.name}")
+        return None
+
+    @classmethod
+    def _save_cached_data(cls, fit_path: Path, data: Tuple):
+        """保存解析数据到缓存"""
+        try:
+            import pickle
+            cache_path = cls._get_cache_path(fit_path)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, 'wb') as f:
+                pickle.dump(data, f)
+            print(f"    [CACHE SAVED] {fit_path.name} -> {cache_path}")
+        except Exception as e:
+            print(f"    [CACHE SAVE ERROR] {e}")
+
     @staticmethod
-    def extract_from_fit(fit_path: Path, segment_length_m: int = 200) -> List[SegmentFeatures]:
-        """直接从 FIT 文件提取分段特征 (支持 ZIP/GZIP 压缩格式)"""
+    def extract_from_fit(fit_path: Path, segment_length_m: int = 200) -> Tuple[List['SegmentFeatures'], float]:
+        """直接从 FIT 文件提取分段特征 (支持 ZIP/GZIP 压缩格式)
+
+        Returns:
+            (segments, rest_ratio): 分段特征列表和静止时间比例
+        """
         try:
             from fitparse import FitFile
         except ImportError:
             print(f"  Warning: fitparse not available, cannot parse {fit_path}")
-            return []
+            return [], 0.0
 
         actual_fit_path = fit_path
         temp_dir = None
@@ -280,7 +337,7 @@ class FeatureExtractor:
                 header = f.read(4)
         except Exception as e:
             print(f"  Warning: Cannot read file {fit_path.name}: {e}")
-            return []
+            return [], 0.0
 
         try:
             if header[:2] == b'\x1f\x8b':
@@ -304,14 +361,38 @@ class FeatureExtractor:
                         print(f"    (Decompressed zip: {fit_path.name})")
                     else:
                         print(f"  Warning: No FIT file found in ZIP archive {fit_path.name}")
-                        return []
+                        return [], 0.0
         except Exception as e:
             print(f"  Warning: Failed to decompress {fit_path.name}: {e}")
-            return []
+            return [], 0.0
 
         try:
             fitfile = FitFile(str(actual_fit_path))
-            
+
+            # 首先获取 SESSION 消息中的预计算值 (Garmin 设备计算)
+            session_data = {}
+            for session in fitfile.get_messages('session'):
+                for field in session:
+                    if field.name in ['total_ascent', 'total_descent', 'total_distance', 'total_timer_time', 'total_elapsed_time']:
+                        session_data[field.name] = field.value
+                break  # 只取第一个 session
+
+            # 使用 Garmin 预计算的值
+            garmin_ascent = session_data.get('total_ascent', 0)
+            garmin_descent = session_data.get('total_descent', 0)
+            garmin_distance = session_data.get('total_distance', 0) / 1000 if session_data.get('total_distance') else 0  # 转换为 km
+            garmin_time = session_data.get('total_timer_time', 0) / 60 if session_data.get('total_timer_time') else 0  # 转换为 min
+
+            print(f"    Garmin pre-calculated: ascent={garmin_ascent}m, descent={garmin_descent}m, distance={garmin_distance:.2f}km")
+
+            # Compute Garmin-derived rest ratio (elapsed - timer = rest)
+            garmin_elapsed = session_data.get('total_elapsed_time', 0)
+            garmin_timer = session_data.get('total_timer_time', 0)
+            garmin_rest_ratio = (garmin_elapsed - garmin_timer) / garmin_elapsed if garmin_elapsed > 0 else 0
+            garmin_rest_ratio = max(0.0, min(0.5, garmin_rest_ratio))  # clamp to [0, 0.5]
+            if garmin_rest_ratio > 0:
+                print(f"    Garmin rest ratio: {garmin_rest_ratio:.1%} (elapsed={garmin_elapsed:.0f}s, timer={garmin_timer:.0f}s)")
+
             # 提取记录点
             records = []
             for record in fitfile.get_messages('record'):
@@ -321,7 +402,7 @@ class FeatureExtractor:
                 records.append(record_data)
 
             if len(records) < 10:
-                return []
+                return [], 0.0
 
             # 提取时间序列数据
             timestamps = []
@@ -369,7 +450,7 @@ class FeatureExtractor:
                     heart_rates.append(0)
 
             if len(elevations) < FilterConfig.FIT['window_size']:
-                return []
+                return [], 0.0
 
             # 使用与 JSON 相同的处理逻辑
             result = FeatureExtractor._extract_from_time_series(
@@ -381,7 +462,7 @@ class FeatureExtractor:
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
-            return result
+            return result, garmin_rest_ratio
 
         except Exception as e:
             print(f"  Warning: Could not extract from FIT {fit_path.name}: {e}")
@@ -389,7 +470,184 @@ class FeatureExtractor:
             if temp_dir and os.path.exists(temp_dir):
                 import shutil
                 shutil.rmtree(temp_dir, ignore_errors=True)
-            return []
+            return [], 0.0
+
+    @staticmethod
+    def extract_from_fit_optimized(fit_path: Path, segment_length_m: int = 200) -> Tuple[List['SegmentFeatures'], float, List[float]]:
+        """优化版本：从 FIT 文件提取分段特征，同时收集坡度数据用于校准
+
+        使用缓存避免重复解析 FIT 文件。
+
+        Returns:
+            (segments, rest_ratio, grades_for_calibration): 分段特征列表、静止时间比例、坡度列表
+        """
+        # 先检查缓存
+        cached = FeatureExtractor._get_cached_data(fit_path)
+        if cached is not None:
+            timestamps, distances, elevations, heart_rates, garmin_rest_ratio = cached
+            # 从缓存数据恢复分段特征
+            result = FeatureExtractor._extract_from_time_series(
+                timestamps, distances, elevations, heart_rates, segment_length_m
+            )
+            # 收集坡度用于校准
+            loose_max_grade = 200.0
+            grades_for_calibration = []
+            for i in range(len(elevations) - 1):
+                dist_m = distances[i + 1] - distances[i]
+                if dist_m > FilterConfig.FIT.get('min_distance_m', 0.5):
+                    grade = ((elevations[i + 1] - elevations[i]) / dist_m) * 100
+                    grade = np.clip(grade, -loose_max_grade, loose_max_grade)
+                    grades_for_calibration.append(abs(grade))
+            return result, garmin_rest_ratio, grades_for_calibration
+
+        try:
+            from fitparse import FitFile
+        except ImportError:
+            print(f"  Warning: fitparse not available, cannot parse {fit_path}")
+            return [], 0.0, []
+
+        actual_fit_path = fit_path
+        temp_dir = None
+
+        # 读取文件头判断格式
+        try:
+            with open(fit_path, 'rb') as f:
+                header = f.read(4)
+        except Exception as e:
+            print(f"  Warning: Cannot read file {fit_path.name}: {e}")
+            return [], 0.0, []
+
+        # 处理压缩格式
+        try:
+            if header[:2] == b'\x1f\x8b':
+                temp_dir = tempfile.mkdtemp()
+                temp_fit_file = Path(temp_dir) / fit_path.stem
+                with gzip.open(fit_path, 'rb') as gz:
+                    with open(temp_fit_file, 'wb') as out:
+                        out.write(gz.read())
+                actual_fit_path = temp_fit_file
+
+            elif header[:4] == b'PK\x03\x04':
+                with zipfile.ZipFile(fit_path, 'r') as zip_ref:
+                    temp_dir = tempfile.mkdtemp()
+                    zip_ref.extractall(temp_dir)
+                    extracted_files = list(Path(temp_dir).rglob('*.fit')) + list(Path(temp_dir).rglob('*.FIT'))
+                    if extracted_files:
+                        actual_fit_path = extracted_files[0]
+                    else:
+                        return [], 0.0, []
+        except Exception as e:
+            print(f"  Warning: Failed to decompress {fit_path.name}: {e}")
+            return [], 0.0, []
+
+        try:
+            fitfile = FitFile(str(actual_fit_path))
+
+            # 获取 SESSION 数据
+            session_data = {}
+            for session in fitfile.get_messages('session'):
+                for field in session:
+                    if field.name in ['total_ascent', 'total_descent', 'total_distance', 'total_timer_time', 'total_elapsed_time']:
+                        session_data[field.name] = field.value
+                break
+
+            garmin_ascent = session_data.get('total_ascent', 0)
+            garmin_descent = session_data.get('total_descent', 0)
+            garmin_distance = session_data.get('total_distance', 0) / 1000 if session_data.get('total_distance') else 0
+            garmin_time = session_data.get('total_timer_time', 0) / 60 if session_data.get('total_timer_time') else 0
+
+            garmin_elapsed = session_data.get('total_elapsed_time', 0)
+            garmin_timer = session_data.get('total_timer_time', 0)
+            garmin_rest_ratio = (garmin_elapsed - garmin_timer) / garmin_elapsed if garmin_elapsed > 0 else 0
+            garmin_rest_ratio = max(0.0, min(0.5, garmin_rest_ratio))
+
+            # 提取记录点
+            records = []
+            for record in fitfile.get_messages('record'):
+                record_data = {}
+                for field in record:
+                    record_data[field.name] = field.value
+                records.append(record_data)
+
+            if len(records) < 10:
+                return [], 0.0, []
+
+            # 解析时间序列
+            timestamps = []
+            distances = []
+            elevations = []
+            heart_rates = []
+
+            for i, record in enumerate(records):
+                if 'timestamp' in record:
+                    ts = record['timestamp']
+                    if isinstance(ts, datetime):
+                        timestamps.append(ts.timestamp())
+                    else:
+                        timestamps.append(i * 60)
+                else:
+                    timestamps.append(i * 60)
+
+                if 'distance' in record and record['distance'] is not None:
+                    distances.append(float(record['distance']))
+                elif 'enhanced_distance' in record and record['enhanced_distance'] is not None:
+                    distances.append(float(record['enhanced_distance']))
+                else:
+                    distances.append(distances[-1] if i > 0 else 0)
+
+                if 'altitude' in record and record['altitude'] is not None:
+                    elevations.append(float(record['altitude']))
+                elif 'enhanced_altitude' in record and record['enhanced_altitude'] is not None:
+                    elevations.append(float(record['enhanced_altitude']))
+                else:
+                    elevations.append(0)
+
+                if 'heart_rate' in record and record['heart_rate'] is not None:
+                    heart_rates.append(int(record['heart_rate']))
+                elif 'enhanced_heart_rate' in record and record['enhanced_heart_rate'] is not None:
+                    heart_rates.append(int(record['enhanced_heart_rate']))
+                else:
+                    heart_rates.append(0)
+
+            if len(elevations) < FilterConfig.FIT['window_size']:
+                return [], 0.0, []
+
+            # 使用宽松的max_grade收集坡度数据用于校准 (200%)
+            loose_max_grade = 200.0
+            distances_arr = np.array(distances)
+            elevations_arr = np.array(elevations)
+
+            grades_for_calibration = []
+            for i in range(len(elevations_arr) - 1):
+                dist_m = distances_arr[i + 1] - distances_arr[i]
+                if dist_m > FilterConfig.FIT.get('min_distance_m', 0.5):
+                    grade = ((elevations_arr[i + 1] - elevations_arr[i]) / dist_m) * 100
+                    grade = np.clip(grade, -loose_max_grade, loose_max_grade)
+                    grades_for_calibration.append(abs(grade))
+
+            # 提取分段特征 (使用正常配置)
+            result = FeatureExtractor._extract_from_time_series(
+                timestamps, distances, elevations, heart_rates, segment_length_m
+            )
+
+            # 保存到缓存 (包含解析后的原始数据，避免重复解析)
+            FeatureExtractor._save_cached_data(fit_path, (
+                timestamps, distances, elevations, heart_rates, garmin_rest_ratio
+            ))
+
+            # 清理临时目录
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+            return result, garmin_rest_ratio, grades_for_calibration
+
+        except Exception as e:
+            print(f"  Warning: Could not extract from FIT {fit_path.name}: {e}")
+            if temp_dir and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            return [], 0.0, []
 
     @staticmethod
     def _extract_from_time_series(timestamps: list, distances: list, elevations: list, 
@@ -409,7 +667,9 @@ class FeatureExtractor:
             dist_m = distances_arr[i + 1] - distances_arr[i]
             ele_m = smoothed_ele_arr[i + 1] - smoothed_ele_arr[i]
 
-            if dist_m > 0:
+            # Bug 7 Fix: Use min_distance threshold to filter GPS drift noise
+            min_distance = FilterConfig.FIT.get('min_distance_m', 0.5)
+            if dist_m > min_distance:
                 grade = (ele_m / dist_m) * 100
                 grade = np.clip(grade, -FilterConfig.FIT['max_grade_pct'], FilterConfig.FIT['max_grade_pct'])
             else:
@@ -424,7 +684,14 @@ class FeatureExtractor:
         accumulated_ascent = 0
         current_seg_distance = 0
         current_seg_elevation_gain = 0
+        current_seg_time = 0  # Bug 3 Fix: track segment start time
         last_elevation = smoothed_elevations[0]
+        seg_start_idx = 1  # Bug 3 Fix: track segment start index
+
+        # Performance Fix: Use deque for O(n) rolling grade calculation instead of O(n²) backtracking
+        rolling_window = deque()  # Store (distance_m, grade) pairs
+        window_distance = 0.0
+        target_distance_m = 500
 
         for i in range(1, len(timestamps)):
             if i >= len(distances) or i >= len(smoothed_elevations):
@@ -432,7 +699,8 @@ class FeatureExtractor:
 
             seg_dist = distances[i] - distances[i-1]
             seg_ele = smoothed_elevations[i]
-            seg_grade = grades[i]
+            # Index Fix: grades[i-1] is the grade for step from point i-1 to point i (current step)
+            seg_grade = grades[i-1]
             ele_gain = max(0, seg_ele - last_elevation)
 
             accumulated_distance += seg_dist / 1000
@@ -440,17 +708,32 @@ class FeatureExtractor:
             current_seg_distance += seg_dist
             current_seg_elevation_gain += ele_gain
 
+            # Bug 3 Fix: Accumulate time in segment
+            time_diff = timestamps[i] - timestamps[i-1]
+            current_seg_time += time_diff
+
             last_elevation = seg_ele
 
+            # Performance Fix: Update rolling window with current point (use i-1 for correct grade index)
+            rolling_window.append((seg_dist, grades[i-1]))
+            window_distance += seg_dist
+
+            # Remove old entries from left when window exceeds 500m
+            while len(rolling_window) > 1 and window_distance - rolling_window[0][0] >= target_distance_m:
+                old_dist, _ = rolling_window.popleft()
+                window_distance -= old_dist
+
+            # Calculate rolling grade from current window
+            rolling_grade = np.mean([g for _, g in rolling_window]) if rolling_window else seg_grade
+
             if current_seg_distance >= segment_length_m:
-                avg_grade = seg_grade
+                # Index Fix: Use grades[i-1:seg_start_idx-1:-1] or adjust indices
+                # The segment covers steps from seg_start_idx to i (inclusive of i's step)
+                # which corresponds to grades[seg_start_idx-1 : i]
+                avg_grade = np.mean(grades[seg_start_idx-1:i]) if i > seg_start_idx else seg_grade
 
-                rolling_window = max(1, int(500 / (seg_dist if seg_dist > 0 else 1)))
-                start_idx = max(0, i - rolling_window)
-                rolling_grade = np.mean(grades[start_idx:i+1]) if i > 0 else avg_grade
-
-                time_diff = timestamps[i] - timestamps[i-1]
-                speed = (seg_dist / 1000) / (time_diff / 3600) if time_diff > 0 else 5
+                # Bug 3 Fix: Use segment average time for speed calculation
+                speed = (current_seg_distance / 1000) / (current_seg_time / 3600) if current_seg_time > 0 else 5
 
                 segments.append(SegmentFeatures(
                     speed_kmh=min(20, max(1, speed)),
@@ -466,12 +749,18 @@ class FeatureExtractor:
 
                 current_seg_distance = 0
                 current_seg_elevation_gain = 0
+                current_seg_time = 0  # Bug 3 Fix: Reset segment time
+                seg_start_idx = i + 1  # Bug Fix: Start next segment from next point (avoid double-counting)
 
         return segments
 
     @staticmethod
-    def extract_from_json(json_path: Path, segment_length_m: int = 200) -> List[SegmentFeatures]:
-        """从 JSON 文件提取分段特征"""
+    def extract_from_json(json_path: Path, segment_length_m: int = 200) -> Tuple[List[SegmentFeatures], float]:
+        """从 JSON 文件提取分段特征
+
+        Returns:
+            (segments, rest_ratio): JSON无session数据, rest_ratio默认0
+        """
         try:
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -479,14 +768,14 @@ class FeatureExtractor:
             # 尝试获取详细的记录数据
             metrics = data.get('metrics', [])
             if not metrics:
-                return FeatureExtractor._extract_from_summary(data, json_path)
+                return FeatureExtractor._extract_from_summary(data, json_path), 0.0
 
             # 从详细记录提取分段特征
-            return FeatureExtractor._extract_from_metrics(metrics, segment_length_m)
+            return FeatureExtractor._extract_from_metrics(metrics, segment_length_m), 0.0
 
         except Exception as e:
             print(f"  Warning: Could not extract from {json_path}: {e}")
-            return []
+            return [], 0.0
 
     @staticmethod
     def _extract_from_summary(data: dict, json_path: Path) -> List[SegmentFeatures]:
@@ -560,7 +849,9 @@ class FeatureExtractor:
             dist_m = distances_arr[i + 1] - distances_arr[i]
             ele_m = smoothed_ele_arr[i + 1] - smoothed_ele_arr[i]
 
-            if dist_m > 0:
+            # Bug 7 Fix: Use min_distance threshold to filter GPS drift noise
+            min_distance = FilterConfig.FIT.get('min_distance_m', 0.5)
+            if dist_m > min_distance:
                 grade = (ele_m / dist_m) * 100
                 # 应用 FIT 配置的坡度截断
                 grade = np.clip(grade, -FilterConfig.FIT['max_grade_pct'], FilterConfig.FIT['max_grade_pct'])
@@ -578,7 +869,14 @@ class FeatureExtractor:
         accumulated_ascent = 0
         current_seg_distance = 0
         current_seg_elevation_gain = 0
+        current_seg_time = 0  # Bug 3 Fix: track segment start time
         last_elevation = smoothed_elevations[0]
+        seg_start_idx = 1  # Bug 3 Fix: track segment start index
+
+        # Performance Fix: Use deque for O(n) rolling grade calculation instead of O(n²) backtracking
+        rolling_window = deque()  # Store (distance_m, grade) pairs
+        window_distance = 0.0
+        target_distance_m = 500
 
         for i in range(1, len(timestamps)):
             if i >= len(distances) or i >= len(smoothed_elevations):
@@ -586,7 +884,8 @@ class FeatureExtractor:
 
             seg_dist = distances[i] - distances[i-1]
             seg_ele = smoothed_elevations[i]
-            seg_grade = grades[i]
+            # Index Fix: grades[i-1] is the grade for step from point i-1 to point i (current step)
+            seg_grade = grades[i-1]
             ele_gain = max(0, seg_ele - last_elevation)
 
             accumulated_distance += seg_dist / 1000  # 转换为 km
@@ -594,21 +893,33 @@ class FeatureExtractor:
             current_seg_distance += seg_dist
             current_seg_elevation_gain += ele_gain
 
+            # Bug 3 Fix: Accumulate time in segment
+            time_diff = timestamps[i] - timestamps[i-1]
+            current_seg_time += time_diff
+
             last_elevation = seg_ele
+
+            # Performance Fix: Update rolling window with current point (use i-1 for correct grade index)
+            rolling_window.append((seg_dist, grades[i-1]))
+            window_distance += seg_dist
+
+            # Remove old entries from left when window exceeds 500m
+            while len(rolling_window) > 1 and window_distance - rolling_window[0][0] >= target_distance_m:
+                old_dist, _ = rolling_window.popleft()
+                window_distance -= old_dist
+
+            # Calculate rolling grade from current window
+            rolling_grade = np.mean([g for _, g in rolling_window]) if rolling_window else seg_grade
 
             # 当达到分段长度时创建特征
             if current_seg_distance >= segment_length_m:
-                # 使用滤波后的坡度
-                avg_grade = seg_grade
+                # Index Fix: Use grades[i-1:seg_start_idx-1:-1] or adjust indices
+                # The segment covers steps from seg_start_idx to i (inclusive of i's step)
+                # which corresponds to grades[seg_start_idx-1 : i]
+                avg_grade = np.mean(grades[seg_start_idx-1:i]) if i > seg_start_idx else seg_grade
 
-                # 计算滚动坡度 (过去500米平均坡度)
-                rolling_window = max(1, int(500 / (seg_dist if seg_dist > 0 else 1)))
-                start_idx = max(0, i - rolling_window)
-                rolling_grade = np.mean(grades[start_idx:i+1]) if i > 0 else avg_grade
-
-                # 计算速度
-                time_diff = timestamps[i] - timestamps[i-1]
-                speed = (seg_dist / 1000) / (time_diff / 3600) if time_diff > 0 else 5
+                # Bug 3 Fix: Use segment average time for speed calculation
+                speed = (current_seg_distance / 1000) / (current_seg_time / 3600) if current_seg_time > 0 else 5
 
                 segments.append(SegmentFeatures(
                     speed_kmh=min(20, max(1, speed)),  # 限制范围
@@ -624,6 +935,8 @@ class FeatureExtractor:
 
                 current_seg_distance = 0
                 current_seg_elevation_gain = 0
+                current_seg_time = 0  # Bug 3 Fix: Reset segment time
+                seg_start_idx = i + 1  # Bug Fix: Start next segment from next point (avoid double-counting)
 
         return segments
 
@@ -637,11 +950,11 @@ class MLRacePredictor:
         self.all_feature_importance = {}
 
     def train_from_files(self, file_paths: List[str]) -> bool:
-        """从文件列表训练模型
-        
+        """从文件列表训练模型 (优化版：避免重复解析FIT文件)
+
         Args:
             file_paths: FIT/JSON 文件路径列表
-            
+
         Returns:
             训练是否成功
         """
@@ -669,23 +982,52 @@ class MLRacePredictor:
 
         print(f"\n  Received {len(file_paths)} files, using top {len(selected_files)} largest files")
 
+        # 优化：一次解析，同时获取校准数据和特征
+        fit_paths = [str(f) for f in selected_files if f.suffix.lower() == '.fit']
+        all_grades_for_calibration = []
+
         # 提取所有分段特征
         all_segments = []
+        all_rest_ratios = []
         file_count = 0
 
         for file_path in selected_files:
             try:
                 if file_path.suffix.lower() == '.fit':
-                    segments = FeatureExtractor.extract_from_fit(file_path)
+                    # 使用优化版本：一次解析，同时返回校准数据和特征
+                    result = FeatureExtractor.extract_from_fit_optimized(file_path)
+                    if result:
+                        segments, rest_ratio, grades = result
+                        if segments:
+                            all_segments.extend(segments)
+                            all_rest_ratios.append(rest_ratio)
+                            all_grades_for_calibration.extend(grades)
+                            file_count += 1
+                            print(f"    {file_path.name}: {len(segments)} segments, rest_ratio={rest_ratio:.1%}")
                 else:  # JSON
-                    segments = FeatureExtractor.extract_from_json(file_path)
-
-                if segments:
-                    all_segments.extend(segments)
-                    file_count += 1
-                    print(f"    {file_path.name}: {len(segments)} segments")
+                    segments, rest_ratio = FeatureExtractor.extract_from_json(file_path)
+                    if segments:
+                        all_segments.extend(segments)
+                        all_rest_ratios.append(rest_ratio)
+                        file_count += 1
+                        print(f"    {file_path.name}: {len(segments)} segments, rest_ratio={rest_ratio:.1%}")
             except Exception as e:
                 print(f"    Warning: Failed to process {file_path.name}: {e}")
+
+        # 校准 max_grade_pct (基于收集的坡度数据)
+        calibrated_max_grade = FilterConfig.FIT['max_grade_pct']
+        if len(all_grades_for_calibration) >= 100:
+            import numpy as np
+            grades_arr = np.array(all_grades_for_calibration)
+            p99 = np.percentile(grades_arr, 99)
+            calibrated_max_grade = float(np.clip(p99, 30, 80))
+            print(f"    P99 calibration: {len(all_grades_for_calibration)} grades -> max_grade={calibrated_max_grade:.0f}%")
+
+        # 更新配置
+        original_fit_config = FilterConfig.FIT.copy()
+        FilterConfig.FIT = FilterConfig.FIT.copy()
+        FilterConfig.FIT['max_grade_pct'] = calibrated_max_grade
+        print(f"    Calibrated max_grade_pct: {calibrated_max_grade:.0f}% (default was {original_fit_config['max_grade_pct']:.0f}%)")
 
         if len(all_segments) < 5:
             print(f"  Error: Only {len(all_segments)} segments extracted, need at least 5")
@@ -700,13 +1042,18 @@ class MLRacePredictor:
 
             # 统计信息
             speeds = [s.speed_kmh for s in all_segments]
+            avg_rest_ratio = statistics.mean(all_rest_ratios) if all_rest_ratios else 0.08
+            avg_rest_ratio = max(0.03, avg_rest_ratio)  # Minimum 3% rest
+
             self.training_stats = {
                 'file_count': file_count,
                 'segment_count': len(all_segments),
                 'avg_speed': round(statistics.mean(speeds), 2),
                 'p50_speed': round(self.predictor.p50_speed, 2),
                 'p90_speed': round(self.predictor.p90_speed, 2),
-                'effort_range': round(self.predictor.p90_speed / self.predictor.p50_speed, 2) if self.predictor.p50_speed > 0 else 1.0
+                'effort_range': round(self.predictor.p90_speed / self.predictor.p50_speed, 2) if self.predictor.p50_speed > 0 else 1.0,
+                'avg_rest_ratio': round(avg_rest_ratio, 3),
+                'calibrated_max_grade_pct': calibrated_max_grade
             }
 
             print(f"\n  Training Stats:")
@@ -714,13 +1061,20 @@ class MLRacePredictor:
             print(f"    P50 Speed: {self.training_stats['p50_speed']} km/h")
             print(f"    P90 Speed: {self.training_stats['p90_speed']} km/h")
             print(f"    Effort Range: {self.training_stats['effort_range']}x")
+            print(f"    Avg Rest Ratio: {self.training_stats['avg_rest_ratio']:.1%}")
+            print(f"    Calibrated Max Grade: {self.training_stats['calibrated_max_grade_pct']:.0f}%")
+
+            # Restore original FIT config
+            FilterConfig.FIT = original_fit_config
 
             return True
 
+        # Restore original FIT config on failure
+        FilterConfig.FIT = original_fit_config
         return False
 
     def parse_gpx_route(self, gpx_path: str, segment_length_km: float = 0.2) -> Tuple[List[SegmentFeatures], Dict]:
-        """解析 GPX 路线为分段特征"""
+        """解析 GPX 路线为分段特征 (包含海拔平滑滤波)"""
         tree = ET.parse(gpx_path)
         root = tree.getroot()
         ns = {'gpx': 'http://www.topografix.com/GPX/1/1'}
@@ -751,31 +1105,45 @@ class MLRacePredictor:
                 'ele': float(ele_elem.text) if ele_elem is not None else 0
             })
 
-        # 创建分段 (包含 CP 点信息)
-        segments = self._create_segments(points, segment_length_km, checkpoints)
+        # 计算累积距离数组
+        distances_m = [0]
+        for i in range(len(points) - 1):
+            dist = self._haversine_distance(points[i], points[i+1])
+            distances_m.append(distances_m[-1] + dist)
 
-        # 路线信息
-        total_distance = sum(
-            self._haversine_distance(points[i], points[i+1]) for i in range(len(points)-1)
-        ) / 1000
+        # 对海拔进行平滑滤波
         elevations = [p['ele'] for p in points]
-        total_gain = sum(max(0, elevations[i+1] - elevations[i]) for i in range(len(elevations)-1))
-        total_loss = sum(max(0, elevations[i] - elevations[i+1]) for i in range(len(elevations)-1))
+        smoothed_elevations, filter_info = apply_gpx_filter(elevations, distances_m)
+
+        # 更新点的海拔数据
+        for i, point in enumerate(points):
+            point['ele'] = float(smoothed_elevations[i])
+
+        # Bug 5 Fix: Pass distances and smoothed elevations for rolling grade calculation
+        segments = self._create_segments(points, np.array(distances_m), smoothed_elevations, segment_length_km, checkpoints)
+
+        # 路线信息 (使用滤波后的数据)
+        total_distance = distances_m[-1] / 1000
+        total_gain = filter_info['filtered_gain_m']
+        # 计算下降（使用滤波后的海拔）
+        total_loss = sum(max(0, smoothed_elevations[i] - smoothed_elevations[i+1]) for i in range(len(smoothed_elevations)-1))
 
         route_info = {
             'total_distance_km': round(total_distance, 2),
-            'total_elevation_gain_m': round(total_gain),
+            'total_elevation_gain_m': total_gain,
             'total_elevation_loss_m': round(total_loss),
             'elevation_density': round(total_gain / total_distance, 1) if total_distance > 0 else 0,
             'segment_count': len(segments),
             'checkpoint_count': len(checkpoints),
-            'checkpoints': checkpoints
+            'checkpoints': checkpoints,
+            'filter_info': filter_info  # 添加滤波信息
         }
 
         return segments, route_info
 
-    def _create_segments(self, points: List[Dict], segment_length_km: float, checkpoints: List[Dict] = None) -> List[SegmentFeatures]:
-        """从 GPX 点创建分段特征"""
+    def _create_segments(self, points: List[Dict], distances_m: np.ndarray, smoothed_elevations: np.ndarray,
+                         segment_length_km: float, checkpoints: List[Dict] = None) -> List[SegmentFeatures]:
+        """从 GPX 点创建分段特征 (Bug 5 Fix: Add rolling_grade calculation)"""
         segments = []
         current_points = [points[0]]
         seg_distance = 0
@@ -784,6 +1152,26 @@ class MLRacePredictor:
         total_distance = 0  # 总累计距离
         total_ascent = 0    # 总累计爬升
         total_descent = 0   # 总累计下降
+
+        # Bug 5 Fix: Compute per-point grades (like FIT path)
+        grades = []
+        for i in range(len(points) - 1):
+            dist_m = distances_m[i + 1] - distances_m[i]
+            ele_m = smoothed_elevations[i + 1] - smoothed_elevations[i]
+            min_distance = FilterConfig.GPX.get('min_distance_m', 0.5)
+            if dist_m > min_distance:
+                grade = (ele_m / dist_m) * 100
+                grade = np.clip(grade, -FilterConfig.GPX['max_grade_pct'], FilterConfig.GPX['max_grade_pct'])
+            else:
+                grade = 0
+            grades.append(grade)
+        grades.append(grades[-1] if grades else 0)
+        grades = np.array(grades)
+
+        # Performance Fix: Use deque for O(n) rolling grade calculation
+        rolling_window = deque()  # Store (distance_m, grade) pairs
+        window_distance = 0.0
+        target_distance_m = 500
 
         for i in range(len(points) - 1):
             p1, p2 = points[i], points[i + 1]
@@ -800,6 +1188,18 @@ class MLRacePredictor:
             total_ascent += ascent
             total_descent += descent
 
+            # Performance Fix: Update rolling window with current point
+            rolling_window.append((dist, grades[i]))
+            window_distance += dist
+
+            # Remove old entries from left when window exceeds 500m
+            while len(rolling_window) > 1 and window_distance - rolling_window[0][0] >= target_distance_m:
+                old_dist, _ = rolling_window.popleft()
+                window_distance -= old_dist
+
+            # Calculate rolling grade from current window
+            rolling_grade_500m = np.mean([g for _, g in rolling_window]) if rolling_window else grades[i]
+
             if seg_distance >= segment_length_km * 1000:
                 # 计算分段特征
                 seg_dist_km = seg_distance / 1000
@@ -807,7 +1207,8 @@ class MLRacePredictor:
                 seg_gain = sum(max(0, elevations[j+1] - elevations[j]) for j in range(len(elevations)-1))
                 seg_loss = sum(max(0, elevations[j] - elevations[j+1]) for j in range(len(elevations)-1))
 
-                avg_grade = (seg_gain / seg_dist_km / 10) if seg_dist_km > 0 else 0
+                # 坡度 (%) = 净海拔差(m) / 距离(m) * 100
+                avg_grade = ((elevations[-1] - elevations[0]) / seg_distance) * 100 if seg_distance > 0 else 0
 
                 # 找最近的 CP 点
                 cp_name = self._find_nearest_checkpoint(current_points[-1], checkpoints) if checkpoints else ""
@@ -815,7 +1216,7 @@ class MLRacePredictor:
                 segments.append(SegmentFeatures(
                     speed_kmh=0,
                     grade_pct=avg_grade,
-                    rolling_grade_500m=avg_grade,
+                    rolling_grade_500m=rolling_grade_500m,
                     accumulated_distance_km=total_distance / 1000,
                     accumulated_ascent_m=total_ascent,
                     absolute_altitude_m=current_points[-1]['ele'],
@@ -839,14 +1240,16 @@ class MLRacePredictor:
             elevations = [p['ele'] for p in current_points]
             seg_gain = sum(max(0, elevations[j+1] - elevations[j]) for j in range(len(elevations)-1))
             seg_loss = sum(max(0, elevations[j] - elevations[j+1]) for j in range(len(elevations)-1))
-            avg_grade = (seg_gain / seg_dist_km / 10) if seg_dist_km > 0 else 0
+            # 坡度 (%) = 净海拔差(m) / 距离(m) * 100
+            avg_grade = ((elevations[-1] - elevations[0]) / seg_distance) * 100 if seg_distance > 0 else 0
 
+            # Use current rolling window value for tail block
             cp_name = self._find_nearest_checkpoint(current_points[-1], checkpoints) if checkpoints else ""
 
             segments.append(SegmentFeatures(
                 speed_kmh=0,
                 grade_pct=avg_grade,
-                rolling_grade_500m=avg_grade,
+                rolling_grade_500m=rolling_grade_500m,
                 accumulated_distance_km=total_distance / 1000,
                 accumulated_ascent_m=total_ascent,
                 absolute_altitude_m=current_points[-1]['ele'],
@@ -910,6 +1313,10 @@ class MLRacePredictor:
 
         segments, route_info = self.parse_gpx_route(gpx_path)
 
+        # Calculate rest multiplier first (needed for segment cumulative times)
+        avg_rest_ratio = self.training_stats.get('avg_rest_ratio', 0.08)
+        rest_multiplier = 1 / (1 - avg_rest_ratio) if avg_rest_ratio < 1 else 1.0
+
         # 预测每段速度
         segment_predictions = []
         prev_cumulative = 0
@@ -924,6 +1331,9 @@ class MLRacePredictor:
             # 计算时间
             segment_time = segment_distance / predicted_speed if predicted_speed > 0 else 0
             total_time += segment_time
+
+            # Apply rest correction to cumulative time
+            cumulative_with_rest = total_time * rest_multiplier
 
             # 获取本段爬升/下降
             seg_ascent = getattr(seg, 'segment_ascent_m', 0)
@@ -963,7 +1373,7 @@ class MLRacePredictor:
                 'altitude_m': round(seg.absolute_altitude_m),
                 'predicted_speed_kmh': round(predicted_speed, 2),
                 'segment_time_min': round(segment_time * 60, 1),
-                'cumulative_time_min': round(total_time * 60, 1),
+                'cumulative_time_min': round(cumulative_with_rest * 60, 1),
                 # 新增字段
                 'ascent_m': round(seg_ascent, 0),
                 'descent_m': round(seg_descent, 0),
@@ -974,16 +1384,21 @@ class MLRacePredictor:
 
             prev_cumulative = seg.accumulated_distance_km
 
-        total_time_min = total_time * 60
         total_distance = route_info['total_distance_km']
+
+        # Calculate final times with rest correction
+        predicted_time_min = total_time * 60 * rest_multiplier
 
         return {
             'effort_factor': effort_factor,
-            'predicted_time_hours': round(total_time, 2),
-            'predicted_time_min': round(total_time_min),
-            'predicted_time_hm': self._format_time(total_time_min),
-            'predicted_pace_min_km': round(total_time_min / total_distance, 1) if total_distance > 0 else 0,
-            'predicted_speed_kmh': round(total_distance / total_time, 2) if total_time > 0 else 0,
+            'predicted_moving_time_min': round(total_time * 60),
+            'predicted_time_min': round(predicted_time_min),
+            'predicted_time_hours': round(predicted_time_min / 60, 2),
+            'predicted_time_hm': self._format_time(predicted_time_min),
+            'predicted_pace_min_km': round(predicted_time_min / total_distance, 1) if total_distance > 0 else 0,
+            'predicted_speed_kmh': round(total_distance / (predicted_time_min / 60), 2) if predicted_time_min > 0 else 0,
+            'rest_ratio_used': avg_rest_ratio,
+            'rest_multiplier': round(rest_multiplier, 3),
             'total_distance_km': total_distance,
             'route_info': route_info,
             'training_stats': self.training_stats,
@@ -1009,10 +1424,19 @@ def main():
     print("越野赛成绩预测器 V1.2 - LightGBM 统一建模版")
     print("=" * 70)
 
-    predictor = MLRacePredictor(str(records_dir))
+    predictor = MLRacePredictor()
 
+    # 获取所有训练文件
     print("\n[Step 1/2] 训练统一 ML 模型...")
-    if not predictor.analyze_and_train():
+    fit_files = list(records_dir.glob('*.fit')) + list(records_dir.glob('*.FIT'))
+    json_files = list(records_dir.glob('*.json'))
+    training_files = [str(f) for f in fit_files + json_files]
+
+    if not training_files:
+        print("  Error: No training files found in records directory")
+        return
+
+    if not predictor.train_from_files(training_files):
         print("训练失败!")
         return
 

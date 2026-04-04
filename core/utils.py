@@ -5,6 +5,11 @@
 """
 
 import numpy as np
+import gzip
+import zipfile
+import tempfile
+import os
+from pathlib import Path
 from scipy.signal import savgol_filter
 from typing import List, Tuple, Dict
 
@@ -31,6 +36,129 @@ class FilterConfig:
         'resample_required': False,     # 不需要重采样
         'min_distance_m': 0.5           # 最小距离阈值 (防止GPS漂移导致坡度爆炸)
     }
+
+    @classmethod
+    def calibrate_from_fit_files(cls, file_paths: List[str], percentile: int = 99) -> Dict:
+        """Two-pass: loose extraction -> compute P99 -> return calibrated config
+
+        Pass 1: Use loose max_grade_pct=200 to extract raw grades from FIT files.
+        Then compute P99 of absolute grade values and clamp to [30, 80].
+
+        Args:
+            file_paths: List of FIT file paths
+            percentile: Percentile to use for calibration (default 99)
+
+        Returns:
+            Calibrated config dict (copy of FIT with adjusted max_grade_pct)
+        """
+        try:
+            from fitparse import FitFile
+        except ImportError:
+            return cls.FIT.copy()
+
+        all_grades = []
+
+        for fit_path_str in file_paths:
+            fit_path = Path(fit_path_str)
+            if not fit_path.exists() or fit_path.suffix.lower() != '.fit':
+                continue
+
+            actual_fit_path = fit_path
+            temp_dir = None
+
+            # Handle decompression
+            try:
+                with open(fit_path, 'rb') as f:
+                    header = f.read(4)
+
+                if header[:2] == b'\x1f\x8b':
+                    temp_dir = tempfile.mkdtemp()
+                    temp_file = Path(temp_dir) / fit_path.stem
+                    with gzip.open(fit_path, 'rb') as gz:
+                        with open(temp_file, 'wb') as out:
+                            out.write(gz.read())
+                    actual_fit_path = temp_file
+                elif header[:4] == b'PK\x03\x04':
+                    with zipfile.ZipFile(fit_path, 'r') as zip_ref:
+                        temp_dir = tempfile.mkdtemp()
+                        zip_ref.extractall(temp_dir)
+                        extracted = list(Path(temp_dir).rglob('*.fit')) + list(Path(temp_dir).rglob('*.FIT'))
+                        if extracted:
+                            actual_fit_path = extracted[0]
+                        else:
+                            if temp_dir and os.path.exists(temp_dir):
+                                import shutil
+                                shutil.rmtree(temp_dir, ignore_errors=True)
+                            continue
+            except Exception:
+                continue
+
+            try:
+                fitfile = FitFile(str(actual_fit_path))
+
+                # Extract elevation and distance records
+                distances = []
+                elevations = []
+                for record in fitfile.get_messages('record'):
+                    record_data = {}
+                    for field in record:
+                        record_data[field.name] = field.value
+
+                    if 'distance' in record_data and record_data['distance'] is not None:
+                        distances.append(float(record_data['distance']))
+                    elif 'enhanced_distance' in record_data and record_data['enhanced_distance'] is not None:
+                        distances.append(float(record_data['enhanced_distance']))
+
+                    if 'altitude' in record_data and record_data['altitude'] is not None:
+                        elevations.append(float(record_data['altitude']))
+                    elif 'enhanced_altitude' in record_data and record_data['enhanced_altitude'] is not None:
+                        elevations.append(float(record_data['enhanced_altitude']))
+
+                # Cleanup temp dir
+                if temp_dir and os.path.exists(temp_dir):
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+
+                if len(elevations) < cls.FIT['window_size']:
+                    continue
+
+                # Apply smoothing
+                smoothed, _ = apply_fit_filter(elevations)
+                distances_arr = np.array(distances)
+                smoothed_arr = np.array(smoothed)
+
+                # Calculate raw grades with loose max_grade (200%)
+                loose_max = 200.0
+                min_distance = cls.FIT.get('min_distance_m', 0.5)
+                for i in range(len(smoothed_arr) - 1):
+                    dist_m = distances_arr[i + 1] - distances_arr[i]
+                    if dist_m > min_distance:
+                        grade = ((smoothed_arr[i + 1] - smoothed_arr[i]) / dist_m) * 100
+                        grade = np.clip(grade, -loose_max, loose_max)
+                        all_grades.append(abs(grade))
+
+            except Exception:
+                if temp_dir and os.path.exists(temp_dir):
+                    import shutil
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                continue
+
+        if len(all_grades) < 100:
+            print(f"    P99 calibration: insufficient data ({len(all_grades)} grade samples), using default")
+            return cls.FIT.copy()
+
+        all_grades_arr = np.array(all_grades)
+        p50 = np.percentile(all_grades_arr, 50)
+        p90 = np.percentile(all_grades_arr, 90)
+        p99 = np.percentile(all_grades_arr, percentile)
+
+        # Clamp to reasonable range
+        calibrated = float(np.clip(p99, 30, 80))
+        print(f"    P99 calibration: P50={p50:.1f}%, P90={p90:.1f}%, P99={p99:.1f}% -> max_grade={calibrated:.0f}%")
+
+        config = cls.FIT.copy()
+        config['max_grade_pct'] = calibrated
+        return config
 
 
 class ElevationFilter:
@@ -246,7 +374,7 @@ def apply_gpx_filter(elevations: List[float],
 
     # 计算滤波后爬升
     filtered_gain_m = np.sum(np.maximum(
-        grades[:-1] * (distances_m[1:] - distances_m[:-1]) / 100,
+        grades[:-1] * (np.array(distances_m[1:]) - np.array(distances_m[:-1])) / 100,
         0
     ))
 
