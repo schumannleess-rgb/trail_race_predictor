@@ -207,7 +207,6 @@ def reset_analysis():
     st.session_state.uploaded_gpx = None
     st.session_state.uploaded_fits = []
     st.session_state.uploaded_effort = 1.0
-    st.rerun()
 
 
 def render_instructions():
