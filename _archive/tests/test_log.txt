@@ -1,3 +1,0 @@
-﻿Testing import...
-Import successful!
-Predictor created!

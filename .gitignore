@@ -44,6 +44,14 @@ reports/
 *.json
 !requirements.txt
 
+# Documentation & development artifacts (not required for program execution)
+doc/
+_archive/
+test/
+example/
+core/_archive_old/
+core/predictor/files.zip
+
 # OMC State
 .omc/
 
