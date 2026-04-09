@@ -39,8 +39,10 @@ env/
 
 # Project specific
 temp/
-reports/
-*.log
+reports/*.py
+reports/__pycache__/
+reports/prediction_report.html
+reports/*.log
 *.json
 !requirements.txt
 
