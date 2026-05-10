@@ -1,0 +1,1765 @@
+"""
+Trail Race Predictor V1.2 - Streamlit Application
+
+用户友好的越野赛预测Web界面
+
+V1.2 更新:
+- 直接支持原始 FIT 文件 (无需 JSON 转换)
+- 统一建模 (简化训练流程)
+- 努力程度量化 (基于 P50/P90 能力边界)
+"""
+
+import streamlit as st
+from pathlib import Path
+import sys
+import time
+
+# 添加项目根目录到路径
+ROOT_DIR = Path(__file__).parent
+sys.path.insert(0, str(ROOT_DIR))
+
+from core.predictor import MLRacePredictor
+from core.types import PredictionResult, EffortLevel, SegmentPrediction
+from reports.report_generator import ReportGenerator
+from data.file_handler import FileHandler
+from data.data_validator import DataValidator, validate_file
+
+# 页面配置
+st.set_page_config(
+    page_title="Trail Master - 越野赛成绩预测",
+    page_icon="⛰️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': '# Trail Master\n越野赛成绩预测系统 v1.2.4'
+    }
+)
+
+# 自定义CSS - 现代简约风格
+st.markdown("""
+<style>
+    /* ===== 全局变量 ===== */
+    :root {
+        --primary: #6366f1;
+        --primary-light: #818cf8;
+        --primary-dark: #4f46e5;
+        --accent: #06b6d4;
+        --success: #10b981;
+        --warning: #f59e0b;
+        --danger: #ef4444;
+        --bg-primary: #0f172a;
+        --bg-secondary: #1e293b;
+        --bg-card: #1e293b;
+        --bg-card-hover: #334155;
+        --text-primary: #f1f5f9;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+        --border: #334155;
+        --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+        --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        --radius-sm: 0.375rem;
+        --radius: 0.5rem;
+        --radius-lg: 0.75rem;
+        --radius-xl: 1rem;
+    }
+
+    /* ===== 全局样式 ===== */
+    .stApp {
+        background-color: var(--bg-primary);
+    }
+
+    /* ===== 侧边栏 ===== */
+    [data-testid="stSidebar"] {
+        background-color: var(--bg-secondary);
+        border-right: 1px solid var(--border);
+    }
+
+    [data-testid="stSidebar"] .stMarkdown h1,
+    [data-testid="stSidebar"] .stMarkdown h2,
+    [data-testid="stSidebar"] .stMarkdown h3 {
+        color: var(--text-primary);
+    }
+
+    [data-testid="stSidebar"] .stMarkdown p {
+        color: var(--text-secondary);
+    }
+
+    /* ===== 主标题 ===== */
+    h1 {
+        color: var(--text-primary) !important;
+        font-weight: 700 !important;
+        letter-spacing: -0.025em;
+    }
+
+    h2, h3 {
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+    }
+
+    /* ===== 指标卡片 ===== */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-hover) 100%);
+        padding: 1.25rem;
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        transition: all 0.2s ease;
+    }
+
+    [data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-lg);
+        border-color: var(--primary);
+    }
+
+    [data-testid="stMetric"] label {
+        color: var(--text-secondary) !important;
+        font-size: 0.875rem !important;
+        font-weight: 500 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    [data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: var(--text-primary) !important;
+        font-size: 2rem !important;
+        font-weight: 700 !important;
+    }
+
+    [data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: var(--success) !important;
+    }
+
+    /* ===== 标签页 ===== */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        background-color: var(--bg-secondary);
+        border-radius: var(--radius-lg);
+        padding: 0.25rem;
+        border: 1px solid var(--border);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        background-color: transparent;
+        color: var(--text-secondary);
+        border-radius: var(--radius);
+        padding: 0.75rem 1.5rem;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background-color: var(--primary) !important;
+        color: white !important;
+        box-shadow: var(--shadow-sm);
+    }
+
+    .stTabs [data-baseweb="tab-highlight"] {
+        display: none;
+    }
+
+    .stTabs [data-baseweb="tab-border"] {
+        display: none;
+    }
+
+    /* ===== 按钮 ===== */
+    .stButton > button {
+        border-radius: var(--radius);
+        font-weight: 500;
+        transition: all 0.2s ease;
+        border: none;
+        box-shadow: var(--shadow-sm);
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: var(--shadow);
+    }
+
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="stBaseButton-primary"] {
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        color: white;
+    }
+
+    .stButton > button[kind="primary"]:hover,
+    .stButton > button[data-testid="stBaseButton-primary"]:hover {
+        background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+    }
+
+    /* ===== 文件上传区域 ===== */
+    [data-testid="stFileUploader"] {
+        background-color: var(--bg-card);
+        border: 2px dashed var(--border);
+        border-radius: var(--radius-lg);
+        padding: 1rem;
+        transition: all 0.2s ease;
+    }
+
+    [data-testid="stFileUploader"]:hover {
+        border-color: var(--primary);
+        background-color: var(--bg-card-hover);
+    }
+
+    [data-testid="stFileUploader"] section {
+        background-color: transparent;
+        border: none;
+        padding: 0;
+    }
+
+    /* ===== 滑块 ===== */
+    .stSlider [data-baseweb="slider"] {
+        color: var(--primary);
+    }
+
+    .stSlider [data-baseweb="thumb"] {
+        background-color: var(--primary);
+        border: 2px solid white;
+        box-shadow: var(--shadow);
+    }
+
+    .stSlider [data-baseweb="track"] {
+        background-color: var(--border);
+    }
+
+    .stSlider [data-baseweb="fill"] {
+        background-color: var(--primary);
+    }
+
+    /* ===== 信息提示框 ===== */
+    .stAlert {
+        border-radius: var(--radius);
+        border: none;
+        box-shadow: var(--shadow-sm);
+    }
+
+    .stAlert [data-testid="stMarkdownContainer"] p {
+        color: var(--text-primary) !important;
+    }
+
+    /* ===== 数据表格 ===== */
+    .stDataFrame {
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        border: 1px solid var(--border);
+    }
+
+    .stDataFrame table {
+        background-color: var(--bg-card);
+    }
+
+    .stDataFrame thead tr th {
+        background-color: var(--bg-secondary) !important;
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        font-size: 0.75rem;
+        letter-spacing: 0.05em;
+        padding: 0.75rem 1rem !important;
+    }
+
+    .stDataFrame tbody tr {
+        transition: background-color 0.15s ease;
+    }
+
+    .stDataFrame tbody tr:hover {
+        background-color: var(--bg-card-hover) !important;
+    }
+
+    .stDataFrame tbody tr td {
+        color: var(--text-secondary) !important;
+        padding: 0.75rem 1rem !important;
+        border-bottom: 1px solid var(--border) !important;
+    }
+
+    /* ===== 进度条 ===== */
+    .stProgress > div > div {
+        background-color: var(--primary);
+        border-radius: var(--radius);
+    }
+
+    .stProgress > div {
+        background-color: var(--border);
+        border-radius: var(--radius);
+    }
+
+    /* ===== 分割线 ===== */
+    hr {
+        border-color: var(--border) !important;
+        opacity: 0.5;
+    }
+
+    /* ===== 展开器 ===== */
+    .streamlit-expanderHeader {
+        background-color: var(--bg-card);
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        color: var(--text-primary) !important;
+        font-weight: 500;
+    }
+
+    .streamlit-expanderContent {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border);
+        border-top: none;
+        border-radius: 0 0 var(--radius) var(--radius);
+    }
+
+    /* ===== 状态指示器 ===== */
+    .stStatus {
+        background-color: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+    }
+
+    /* ===== 代码块 ===== */
+    .stCodeBlock {
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+    }
+
+    .stCodeBlock code {
+        color: var(--text-primary) !important;
+        background-color: var(--bg-secondary) !important;
+    }
+
+    /* ===== 自定义组件 ===== */
+    .metric-card {
+        background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-hover) 100%);
+        padding: 1.5rem;
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        transition: all 0.2s ease;
+    }
+
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-lg);
+        border-color: var(--primary);
+    }
+
+    .metric-card-label {
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+    }
+
+    .metric-card-value {
+        color: var(--text-primary);
+        font-size: 2.5rem;
+        font-weight: 700;
+        line-height: 1;
+    }
+
+    .metric-card-subtitle {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        margin-top: 0.5rem;
+    }
+
+    /* 难度标签 */
+    .difficulty-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .difficulty-easy {
+        background-color: rgba(16, 185, 129, 0.1);
+        color: var(--success);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+    }
+
+    .difficulty-moderate {
+        background-color: rgba(245, 158, 11, 0.1);
+        color: var(--warning);
+        border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+
+    .difficulty-hard {
+        background-color: rgba(239, 68, 68, 0.1);
+        color: var(--danger);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+
+    .difficulty-extreme {
+        background-color: rgba(139, 92, 246, 0.1);
+        color: var(--primary-light);
+        border: 1px solid rgba(139, 92, 246, 0.2);
+    }
+
+    /* 战术建议卡片 */
+    .advice-card {
+        background-color: var(--bg-card);
+        border-radius: var(--radius-lg);
+        border: 1px solid var(--border);
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+    }
+
+    .advice-card-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        color: var(--text-primary);
+        font-weight: 600;
+    }
+
+    .advice-card-body {
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        line-height: 1.6;
+    }
+
+    /* 下载按钮 */
+    .download-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        width: 100%;
+        padding: 0.875rem 1.5rem;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        color: white;
+        border: none;
+        border-radius: var(--radius);
+        font-size: 0.875rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        text-decoration: none;
+    }
+
+    .download-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-lg);
+        background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+    }
+
+    .download-btn-secondary {
+        background: linear-gradient(135deg, var(--bg-card-hover) 0%, var(--bg-secondary) 100%);
+        border: 1px solid var(--border);
+    }
+
+    .download-btn-secondary:hover {
+        border-color: var(--primary);
+    }
+
+    /* 流程步骤 */
+    .step-indicator {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 1rem;
+        background-color: var(--bg-card);
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        margin-bottom: 0.75rem;
+    }
+
+    .step-number {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        color: white;
+        border-radius: 50%;
+        font-size: 0.875rem;
+        font-weight: 700;
+        flex-shrink: 0;
+    }
+
+    .step-content {
+        flex: 1;
+    }
+
+    .step-title {
+        color: var(--text-primary);
+        font-weight: 600;
+        font-size: 0.875rem;
+    }
+
+    .step-description {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        margin-top: 0.25rem;
+    }
+
+    /* 滚动条 */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: var(--bg-primary);
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-muted);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def main():
+    """主函数"""
+    # 标题区域 - 现代设计
+    st.markdown("""
+    <div style="margin-bottom: 2rem;">
+        <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.75rem;">
+            <span style="font-size: 2.5rem;">⛰️</span>
+            Trail Master
+        </h1>
+        <p style="color: var(--text-secondary); font-size: 1.125rem; margin: 0;">
+            上传训练记录，获取精准的赛道配速分析与完赛时间预测
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 初始化session state
+    init_session_state()
+
+    # 侧边栏
+    render_sidebar()
+
+    # 主界面
+    if st.session_state.get('analysis_started'):
+        render_analysis()
+    else:
+        render_instructions()
+
+
+def init_session_state():
+    """初始化session state"""
+    defaults = {
+        'predictor': None,
+        'file_handler': FileHandler(str(ROOT_DIR / 'temp')),
+        # 当前上传的文件（用户可修改）
+        'uploaded_gpx': None,
+        'uploaded_fits': [],
+        'uploaded_effort': 1.0,
+        # 分析快照（点击开始分析时固化）
+        'analysis_snapshot': None,  # {'gpx_file', 'fit_files', 'effort_factor'}
+        # 分析状态
+        'analysis_started': False,
+        'analysis_complete': False,
+        'prediction_result': None,
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def render_sidebar():
+    """渲染侧边栏 - 现代设计"""
+    with st.sidebar:
+        # 侧边栏标题
+        st.markdown("""
+        <div style="margin-bottom: 1.5rem;">
+            <h2 style="margin: 0; font-size: 1.25rem; color: var(--text-primary);">
+                🎛️ 控制面板
+            </h2>
+            <p style="margin: 0.25rem 0 0 0; font-size: 0.75rem; color: var(--text-muted);">
+                配置参数并开始分析
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 如果正在分析中，禁用输入
+        if st.session_state.get('analysis_started') and not st.session_state.get('analysis_complete'):
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+                        border: 1px solid rgba(99, 102, 241, 0.2);
+                        border-radius: 0.75rem;
+                        padding: 1rem;
+                        text-align: center;
+                        margin-bottom: 1rem;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">⏳</div>
+                <div style="color: var(--text-primary); font-weight: 600; font-size: 0.875rem;">分析进行中</div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">请稍候...</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.button("🔄 重置", on_click=reset_analysis, use_container_width=True)
+            return
+
+        # 如果分析完成，显示重置按钮
+        if st.session_state.get('analysis_complete'):
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+                        border: 1px solid rgba(16, 185, 129, 0.2);
+                        border-radius: 0.75rem;
+                        padding: 1rem;
+                        text-align: center;
+                        margin-bottom: 1rem;">
+                <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">✅</div>
+                <div style="color: var(--text-primary); font-weight: 600; font-size: 0.875rem;">分析完成</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.button("🔄 重新开始", on_click=reset_analysis, use_container_width=True)
+            st.divider()
+
+        # 数据上传区域
+        st.markdown("""
+        <div style="margin-bottom: 1rem;">
+            <h3 style="margin: 0; font-size: 1rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--primary);">📁</span> 数据上传
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 赛道上传
+        gpx_file = st.file_uploader(
+            "上传目标赛道 (GPX)",
+            type=['gpx'],
+            key="gpx_uploader",
+            help="上传比赛的GPX路线文件"
+        )
+
+        # 训练记录上传
+        fit_files = st.file_uploader(
+            "上传个人记录 (FIT)",
+            type=['fit'],
+            accept_multiple_files=True,
+            key="fits_uploader",
+            help="上传历史训练记录，建议至少5个文件，15-20个精品FIT效果最佳"
+        )
+
+        # 显示上传状态
+        if gpx_file:
+            st.markdown(f"""
+            <div style="background-color: rgba(16, 185, 129, 0.1);
+                        border: 1px solid rgba(16, 185, 129, 0.2);
+                        border-radius: 0.5rem;
+                        padding: 0.75rem;
+                        margin-top: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="color: var(--success);">✓</span>
+                    <span style="color: var(--text-primary); font-size: 0.875rem; font-weight: 500;">赛道已加载</span>
+                </div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; margin-left: 1.5rem;">
+                    {gpx_file.name}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if fit_files:
+            st.markdown(f"""
+            <div style="background-color: rgba(6, 182, 212, 0.1);
+                        border: 1px solid rgba(6, 182, 212, 0.2);
+                        border-radius: 0.5rem;
+                        padding: 0.75rem;
+                        margin-top: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span style="color: var(--accent);">✓</span>
+                    <span style="color: var(--text-primary); font-size: 0.875rem; font-weight: 500;">训练记录已加载</span>
+                </div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; margin-left: 1.5rem;">
+                    {len(fit_files)} 个文件
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # 努力程度滑块
+        st.markdown("""
+        <div style="margin-bottom: 1rem;">
+            <h3 style="margin: 0; font-size: 1rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--primary);">⚡</span> 比赛状态
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+        effort_factor = st.slider(
+            "努力程度系数",
+            min_value=0.8,
+            max_value=1.2,
+            value=1.0,
+            step=0.01,
+            key="effort_slider",
+            help="1.0 = 平时平均水平 (P50)\n1.1-1.2 = 比赛状态 (接近 P90)\n0.8-0.9 = 保守策略"
+        )
+
+        # 显示努力程度说明 - 使用卡片样式
+        if effort_factor < 0.95:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, rgba(6, 182, 212, 0.1) 0%, rgba(99, 102, 241, 0.1) 100%);
+                        border: 1px solid rgba(6, 182, 212, 0.2);
+                        border-radius: 0.75rem;
+                        padding: 1rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span style="font-size: 1.25rem;">🎯</span>
+                    <span style="color: var(--accent); font-weight: 600; font-size: 0.875rem;">保守策略</span>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.75rem;">
+                    系数: {effort_factor:.2f}x · 适合长距离或恢复期比赛
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        elif effort_factor > 1.05:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(239, 68, 68, 0.1) 100%);
+                        border: 1px solid rgba(245, 158, 11, 0.2);
+                        border-radius: 0.75rem;
+                        padding: 1rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span style="font-size: 1.25rem;">🔥</span>
+                    <span style="color: var(--warning); font-weight: 600; font-size: 0.875rem;">比赛状态</span>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.75rem;">
+                    系数: {effort_factor:.2f}x · 挑战你的极限!
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+                        border: 1px solid rgba(16, 185, 129, 0.2);
+                        border-radius: 0.75rem;
+                        padding: 1rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span style="font-size: 1.25rem;">✅</span>
+                    <span style="color: var(--success); font-weight: 600; font-size: 0.875rem;">平均水平</span>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.75rem;">
+                    系数: {effort_factor:.2f}x · 稳健的完赛目标
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # 开始按钮
+        st.markdown("""
+        <div style="margin-bottom: 0.5rem;">
+            <h3 style="margin: 0; font-size: 1rem; color: var(--text-primary); display: flex; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--primary);">🚀</span> 开始分析
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("开始分析", type="primary", use_container_width=True, key="start_button"):
+            if not gpx_file:
+                st.error("请上传赛道GPX文件!")
+            elif not fit_files or len(fit_files) < 3:
+                st.warning("建议至少上传3个训练记录文件")
+                if not fit_files:
+                    st.error("请上传训练记录!")
+                else:
+                    start_analysis(gpx_file, fit_files, effort_factor)
+            else:
+                start_analysis(gpx_file, fit_files, effort_factor)
+
+        # 底部信息
+        st.markdown("""
+        <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);">
+            <div style="color: var(--text-muted); font-size: 0.7rem; text-align: center;">
+                Trail Master v1.2.4<br>
+                Powered by ML
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def start_analysis(gpx_file, fit_files, effort_factor):
+    """开始分析 - 固化输入数据"""
+    # 保存当前上传的文件（用于显示）
+    st.session_state.uploaded_gpx = gpx_file
+    st.session_state.uploaded_fits = fit_files
+    st.session_state.uploaded_effort = effort_factor
+
+    # 创建分析快照（固化数据，不受后续上传影响）
+    st.session_state.analysis_snapshot = {
+        'gpx_file': gpx_file,
+        'fit_files': fit_files,
+        'effort_factor': effort_factor
+    }
+
+    # 清除之前的结果
+    st.session_state.predictor = None
+    st.session_state.prediction_result = None
+
+    # 标记分析开始
+    st.session_state.analysis_started = True
+    st.session_state.analysis_complete = False
+    st.rerun()
+
+
+def reset_analysis():
+    """重置分析状态"""
+    st.session_state.analysis_started = False
+    st.session_state.analysis_complete = False
+    st.session_state.analysis_snapshot = None
+    st.session_state.predictor = None
+    st.session_state.prediction_result = None
+    st.session_state.uploaded_gpx = None
+    st.session_state.uploaded_fits = []
+    st.session_state.uploaded_effort = 1.0
+
+
+def render_instructions():
+    """渲染使用说明"""
+    st.markdown("""
+    ### 使用说明
+
+    1. **上传赛道GPX文件** - 比赛路线文件，包含海拔和坐标数据
+    2. **上传训练记录** - 你的历史训练数据 (FIT格式)
+       - 建议 15-20 个精品 FIT 文件效果最佳
+       - 最少 5 个文件即可运行
+       - 请剔除带娃散步、信号漂移或纯平路路跑记录
+    3. **调节努力程度** - 滑块调节 (0.8-1.2)
+       - 1.0 = 平时平均水平 (P50)
+       - 1.1-1.2 = 比赛状态 (接近 P90)
+       - 0.8-0.9 = 保守策略
+    4. **开始分析** - 系统将训练统一 ML 模型并预测你的完赛时间
+
+    ---
+
+    ### V1.2 新特性
+
+    - :star: **直接支持 FIT 文件** - 无需 JSON 转换，直接上传原始 FIT
+    - :brain: **统一建模** - 使用所有训练数据建模，简化流程
+    - :chart_with_upwards_trend: **能力边界量化** - 基于 P50/P90 科学设定努力程度
+    - :shield: **物理验证** - VAM 限制防止 unrealistic 预测
+    - :memo: **详细报告** - 分段配速、战术建议、难度预警
+
+    ---
+
+    ### 数据要求
+
+    | 文件类型 | 格式 | 要求 |
+    |---------|------|------|
+    | 赛道 | GPX | 需要包含海拔数据 |
+    | 训练记录 | FIT | 建议 15-20 个精品文件，最少 5 个 |
+    """)
+
+
+def detect_duplicates(file_paths):
+    """
+    检测重复的训练文件
+    
+    重复判定规则：
+    1. FIT文件：根据活动ID（time_created + 日期）判定
+    2. JSON文件：根据文件内容的起始时间判定
+    3. 文件名相同也视为重复
+    
+    Args:
+        file_paths: 文件路径列表
+        
+    Returns:
+        (unique_paths, duplicates): 唯一文件列表和重复文件列表
+    """
+    import hashlib
+    from datetime import datetime
+    
+    seen_activities = {}
+    unique_paths = []
+    duplicates = []
+    
+    for path in file_paths:
+        path = Path(path)
+        activity_key = None
+        
+        # 根据文件类型提取活动标识
+        if path.suffix.lower() == '.fit':
+            try:
+                from fitparse import FitFile
+                fitfile = FitFile(str(path))
+                
+                # 获取活动创建时间作为唯一标识
+                for record in fitfile.get_messages('file_id'):
+                    for field in record:
+                        if field.name == 'time_created':
+                            activity_key = str(field.value)
+                            break
+                    if activity_key:
+                        break
+                        
+            except Exception as e:
+                # 解析失败，用文件内容hash作为标识
+                activity_key = hashlib.md5(path.read_bytes()).hexdigest()[:16]
+                
+        elif path.suffix.lower() == '.json':
+            try:
+                import json
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                # 用第一条记录的时间作为标识
+                if isinstance(data, list) and len(data) > 0:
+                    first_record = data[0]
+                    activity_key = str(first_record.get('timestamp', ''))
+                elif isinstance(data, dict):
+                    activity_key = str(data.get('start_time', data.get('timestamp', '')))
+                    
+            except Exception:
+                activity_key = hashlib.md5(path.read_bytes()).hexdigest()[:16]
+        else:
+            # 其他格式用文件hash
+            activity_key = hashlib.md5(path.read_bytes()).hexdigest()[:16]
+        
+        # 如果无法提取标识，用文件名
+        if not activity_key:
+            activity_key = path.stem
+        
+        # 检查是否重复
+        if activity_key in seen_activities:
+            duplicates.append(f"{path.name} (与 {seen_activities[activity_key].name} 重复)")
+        else:
+            seen_activities[activity_key] = path
+            unique_paths.append(path)
+    
+    return unique_paths, duplicates
+
+
+def render_analysis():
+    """渲染分析过程和结果"""
+    # 获取分析快照（固化数据，不受后续上传影响）
+    snapshot = st.session_state.get('analysis_snapshot')
+    if not snapshot:
+        st.error("分析数据丢失，请重新开始")
+        return
+
+    # 如果已经完成且有结果，直接显示，不重新分析
+    if st.session_state.get('analysis_complete') and st.session_state.get('prediction_result'):
+        render_prediction_results()
+        return
+
+    # 分析还未完成，执行分析流程
+    with st.status("正在分析中...", expanded=True) as status:
+        # 日志区域
+        log_area = st.empty()
+        log_messages = []
+
+        def log(msg):
+            log_messages.append(msg)
+            log_area.code("\n".join(log_messages), language=None)
+
+        # 显示分析文件信息
+        st.info(f"📁 赛道: **{snapshot['gpx_file'].name}**")
+        st.info(f"📁 训练记录: **{len(snapshot['fit_files'])}** 个文件")
+        st.caption("训练文件: " + ", ".join([f.name for f in snapshot['fit_files'][:5]]) +
+                  ("..." if len(snapshot['fit_files']) > 5 else ""))
+
+        # Step 1: 保存文件
+        st.write(":floppy_disk: 处理上传文件...")
+        file_handler = st.session_state.file_handler
+
+        # 清理旧文件，避免累积
+        file_handler.clear_subdir('records')
+        file_handler.clear_subdir('routes')
+
+        gpx_path = file_handler.save_uploaded_file(snapshot['gpx_file'], 'routes')
+        fit_paths = []
+
+        for fit_file in snapshot['fit_files']:
+            path = file_handler.save_uploaded_file(fit_file, 'records')
+            fit_paths.append(path)
+
+        # Step 2: 检测重复数据
+        st.write(":mag: 检测重复数据...")
+        unique_paths, duplicates = detect_duplicates(fit_paths)
+
+        if duplicates:
+            st.warning(f"发现 {len(duplicates)} 个重复文件，已自动过滤")
+            with st.expander("查看重复文件"):
+                for dup in duplicates:
+                    st.write(f"- {dup}")
+
+        fit_paths = unique_paths
+        st.write(f"有效训练文件: {len(fit_paths)} 个")
+
+        # Step 3: 验证数据
+        st.write(":mag: 验证数据格式...")
+        gpx_result = validate_file(gpx_path)
+        if not gpx_result.valid:
+            st.error(f"赛道文件问题: {gpx_result.error}")
+            status.update(label="验证失败", state="error")
+            st.session_state.analysis_complete = True
+            return
+
+        if gpx_result.warnings:
+            for w in gpx_result.warnings:
+                st.warning(w)
+
+        # Step 4: 智能筛选
+        st.write(":filter: 智能筛选训练数据...")
+        if len(fit_paths) > 20:
+            fit_paths = file_handler.auto_select_best_files(fit_paths, max_count=20)
+
+        st.write(f"已选取 {len(fit_paths)} 个训练样本")
+
+        # Step 5: 训练模型
+        st.write(":brain: 训练统一机器学习模型...")
+        st.info("💡 首次训练需要 1-5 分钟解析 FIT 文件，之后会快很多")
+
+        # 进度条
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        predictor = MLRacePredictor()
+
+        progress_bar.progress(20)
+        status_text.text("正在解析训练数据...")
+
+        train_result = predictor.train_from_files([str(p) for p in fit_paths])
+
+        if not train_result:
+            st.error("模型训练失败!")
+            status.update(label="训练失败", state="error")
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state.analysis_complete = True
+            return
+
+        progress_bar.progress(70)
+        status_text.text("训练完成，正在生成预测...")
+
+        st.session_state.predictor = predictor
+
+        stats = predictor.training_stats
+        st.write(f"  文件数: {stats.get('file_count', 0)}")
+        st.write(f"  分段数: {stats.get('segment_count', 0)}")
+        st.write(f"  平均速度: {stats.get('avg_speed', 0):.2f} km/h")
+        st.write(f"  P50 速度: {stats.get('p50_speed', 0):.2f} km/h")
+        st.write(f"  P90 速度: {stats.get('p90_speed', 0):.2f} km/h")
+
+        # Step 6: 预测
+        progress_bar.progress(85)
+        st.write(":chart_with_upwards_trend: 生成预测...")
+
+        effort_factor = snapshot['effort_factor']
+
+        try:
+            result = predictor.predict_race(gpx_path, effort_factor)
+            progress_bar.progress(100)
+            status_text.text("完成!")
+
+            # 转换为PredictionResult对象
+            prediction = convert_to_prediction_result(result, effort_factor)
+            st.session_state.prediction_result = prediction
+
+            status.update(label="分析完成!", state="complete")
+            st.session_state.analysis_complete = True
+
+        except Exception as e:
+            st.error(f"预测失败: {str(e)}")
+            status.update(label="预测失败", state="error")
+            progress_bar.empty()
+            status_text.empty()
+            st.session_state.analysis_complete = True
+            return
+        finally:
+            # 清理进度条
+            import time
+            time.sleep(0.5)
+            progress_bar.empty()
+            status_text.empty()
+
+    # 显示结果
+    render_prediction_results()
+
+
+def convert_to_prediction_result(result: dict, effort_factor: float) -> PredictionResult:
+    """将字典结果转换为PredictionResult对象"""
+    from core.types import SegmentPrediction
+
+    segments = []
+    cumulative_distance = 0
+
+    for i, seg in enumerate(result.get('segment_predictions', [])):
+        segment_dist = seg.get('distance_km', 0.2)
+        start_km = cumulative_distance
+        cumulative_distance += segment_dist
+
+        segments.append(SegmentPrediction(
+            segment_id=seg.get('segment', i + 1),
+            start_km=start_km,
+            end_km=cumulative_distance,
+            distance_km=segment_dist,
+            grade_pct=seg.get('grade_pct', 0),
+            altitude_m=seg.get('altitude_m', 0),
+            predicted_speed_kmh=seg.get('predicted_speed_kmh', 5),
+            predicted_time_min=seg.get('segment_time_min', 3),
+            cumulative_time_min=seg.get('cumulative_time_min', 3 * (i + 1)),
+            difficulty_level=seg.get('difficulty', 'moderate'),
+            grade_type=seg.get('grade_type', '平地'),
+            ascent_m=seg.get('ascent_m', 0),
+            descent_m=seg.get('descent_m', 0),
+            cp_name=seg.get('cp_name', '')
+        ))
+
+    route_info = result.get('route_info', {})
+
+    return PredictionResult(
+        total_time_min=result.get('predicted_time_min', 0),
+        total_time_hm=result.get('predicted_time_hm', '0:00:00'),
+        pace_min_km=result.get('predicted_pace_min_km', 0),
+        speed_kmh=result.get('predicted_speed_kmh', 0),
+        total_distance_km=route_info.get('total_distance_km', 0),
+        total_ascent_m=route_info.get('total_elevation_gain_m', 0),
+        total_descent_m=route_info.get('total_elevation_loss_m', route_info.get('total_elevation_gain_m', 0) * 0.9),
+        elevation_density=route_info.get('elevation_density', 0),
+        segments=segments,
+        feature_importance=result.get('feature_importance', {}),
+        model_confidence=0.85,
+        effort_level=f"{effort_factor:.2f}x",
+        training_stats=result.get('training_stats', {}),
+        warnings=[]
+    )
+
+
+def render_prediction_results():
+    """渲染预测结果 - 现代设计"""
+    prediction = st.session_state.prediction_result
+
+    # 成功提示
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%);
+                border: 1px solid rgba(16, 185, 129, 0.2);
+                border-radius: 0.75rem;
+                padding: 1rem 1.5rem;
+                margin-bottom: 2rem;
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;">
+        <span style="font-size: 1.5rem;">✅</span>
+        <div>
+            <div style="color: var(--success); font-weight: 600; font-size: 1rem;">预测完成</div>
+            <div style="color: var(--text-muted); font-size: 0.75rem;">基于你的训练数据生成个性化预测</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 主要指标卡片 - 自定义HTML
+    st.markdown(f"""
+    <div style="display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 1rem;
+                margin-bottom: 2rem;">
+        <!-- 完赛时间 -->
+        <div class="metric-card">
+            <div class="metric-card-label">预测完赛时间</div>
+            <div class="metric-card-value" style="color: var(--primary);">{prediction.total_time_hm}</div>
+            <div class="metric-card-subtitle">目标成绩</div>
+        </div>
+
+        <!-- 平均配速 -->
+        <div class="metric-card">
+            <div class="metric-card-label">平均配速</div>
+            <div class="metric-card-value">{prediction.pace_min_km:.1f}</div>
+            <div class="metric-card-subtitle">min/km</div>
+        </div>
+
+        <!-- 平均速度 -->
+        <div class="metric-card">
+            <div class="metric-card-label">平均速度</div>
+            <div class="metric-card-value">{prediction.speed_kmh:.1f}</div>
+            <div class="metric-card-subtitle">km/h</div>
+        </div>
+
+        <!-- 总爬升 -->
+        <div class="metric-card">
+            <div class="metric-card-label">总爬升</div>
+            <div class="metric-card-value" style="color: var(--warning);">{prediction.total_ascent_m:.0f}</div>
+            <div class="metric-card-subtitle">meters</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 赛道难度标签
+    difficulty_html = ""
+    if prediction.elevation_density > 100:
+        difficulty_html = '<span class="difficulty-badge difficulty-extreme">⚡ 极难</span>'
+    elif prediction.elevation_density > 70:
+        difficulty_html = '<span class="difficulty-badge difficulty-hard">🔥 困难</span>'
+    elif prediction.elevation_density > 40:
+        difficulty_html = '<span class="difficulty-badge difficulty-moderate">🏃 中等</span>'
+    else:
+        difficulty_html = '<span class="difficulty-badge difficulty-easy">✅ 轻松</span>'
+
+    # 赛道概览卡片
+    st.markdown(f"""
+    <div style="background-color: var(--bg-card);
+                border: 1px solid var(--border);
+                border-radius: 0.75rem;
+                padding: 1.5rem;
+                margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 style="margin: 0; color: var(--text-primary); font-size: 1rem;">📊 赛道概览</h3>
+            {difficulty_html}
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem;">
+            <div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">总距离</div>
+                <div style="color: var(--text-primary); font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">{prediction.total_distance_km:.1f} km</div>
+            </div>
+            <div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">总爬升</div>
+                <div style="color: var(--text-primary); font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">{prediction.total_ascent_m:.0f} m</div>
+            </div>
+            <div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">总下降</div>
+                <div style="color: var(--text-primary); font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">{prediction.total_descent_m:.0f} m</div>
+            </div>
+            <div>
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">爬升密度</div>
+                <div style="color: var(--text-primary); font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem;">{prediction.elevation_density:.0f} m/km</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # 详细分析标签页
+    tab1, tab2, tab3, tab4 = st.tabs(["赛道概览", "分段配速", "战术建议", "下载报告"])
+
+    with tab1:
+        render_route_overview(prediction)
+
+    with tab2:
+        render_split_table(prediction)
+
+    with tab3:
+        render_tactical_advice(prediction)
+
+    with tab4:
+        render_download_section(prediction)
+
+
+def render_route_overview(prediction: PredictionResult):
+    """渲染赛道概览 - 现代设计"""
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # 赛道信息卡片
+        st.markdown("""
+        <div style="background-color: var(--bg-card);
+                    border: 1px solid var(--border);
+                    border-radius: 0.75rem;
+                    padding: 1.5rem;
+                    height: calc(100% - 2rem);">
+            <h3 style="margin: 0 0 1.25rem 0; color: var(--text-primary); font-size: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--primary);">🗺️</span> 赛道信息
+            </h3>
+        """, unsafe_allow_html=True)
+
+        # 难度评级
+        if prediction.elevation_density > 100:
+            difficulty_color = "var(--primary-light)"
+            difficulty_text = "⚡ 极难"
+            difficulty_desc = "爬升密度极高，需要充分准备"
+        elif prediction.elevation_density > 70:
+            difficulty_color = "var(--danger)"
+            difficulty_text = "🔥 困难"
+            difficulty_desc = "高难度赛道，注意配速控制"
+        elif prediction.elevation_density > 40:
+            difficulty_color = "var(--warning)"
+            difficulty_text = "🏃 中等"
+            difficulty_desc = "中等难度，正常发挥即可"
+        else:
+            difficulty_color = "var(--success)"
+            difficulty_text = "✅ 轻松"
+            difficulty_desc = "相对轻松的赛道"
+
+        st.markdown(f"""
+            <div style="display: grid; gap: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">总距离</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{prediction.total_distance_km:.2f} km</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">总爬升</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{prediction.total_ascent_m:.0f} m</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">总下降</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{prediction.total_descent_m:.0f} m</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">爬升密度</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{prediction.elevation_density:.1f} m/km</span>
+                </div>
+            </div>
+
+            <div style="margin-top: 1.25rem; padding: 1rem; background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%); border-radius: 0.5rem; border-left: 3px solid {difficulty_color};">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span style="color: {difficulty_color}; font-weight: 600;">难度等级</span>
+                    <span style="background-color: {difficulty_color}; color: white; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">{difficulty_text}</span>
+                </div>
+                <div style="color: var(--text-muted); font-size: 0.75rem;">{difficulty_desc}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        # 能力画像卡片
+        stats = prediction.training_stats
+
+        st.markdown("""
+        <div style="background-color: var(--bg-card);
+                    border: 1px solid var(--border);
+                    border-radius: 0.75rem;
+                    padding: 1.5rem;
+                    height: calc(100% - 2rem);">
+            <h3 style="margin: 0 0 1.25rem 0; color: var(--text-primary); font-size: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+                <span style="color: var(--accent);">👤</span> 你的能力画像
+            </h3>
+        """, unsafe_allow_html=True)
+
+        if stats:
+            p50 = stats.get('p50_speed', 0)
+            p90 = stats.get('p90_speed', 0)
+            effort_range = stats.get('effort_range', 1.0)
+
+            st.markdown(f"""
+            <div style="display: grid; gap: 1rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">平均训练速度</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{stats.get('avg_speed', 0):.2f} km/h</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">日常水平 (P50)</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{p50:.2f} km/h</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">最佳状态 (P90)</span>
+                    <span style="color: var(--success); font-weight: 600;">{p90:.2f} km/h</span>
+                </div>
+            </div>
+
+            <div style="margin-top: 1.25rem; padding: 1rem; background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%); border-radius: 0.5rem;">
+                <div style="color: var(--success); font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem;">
+                    💡 能力提升空间
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.75rem;">
+                    你的极限比日常快 <strong style="color: var(--primary);">{effort_range:.0%}</strong>，比赛时可挑战最佳状态！
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # 努力程度
+        effort_factor = float(prediction.effort_level.replace('x', ''))
+        if effort_factor >= 1.1:
+            effort_color = "var(--warning)"
+            effort_icon = "🔥"
+            effort_text = "挑战极限"
+        elif effort_factor >= 1.0:
+            effort_color = "var(--success)"
+            effort_icon = "✅"
+            effort_text = "稳健完赛"
+        else:
+            effort_color = "var(--accent)"
+            effort_icon = "🎯"
+            effort_text = "保守策略"
+
+        st.markdown(f"""
+            <div style="margin-top: 1.25rem; padding: 1rem; background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(6, 182, 212, 0.1) 100%); border-radius: 0.5rem; border-left: 3px solid {effort_color};">
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span style="color: {effort_color}; font-weight: 600;">本次预测努力程度</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">系数</span>
+                    <span style="color: var(--text-primary); font-weight: 600;">{prediction.effort_level}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem;">
+                    <span style="color: var(--text-muted); font-size: 0.875rem;">策略</span>
+                    <span style="color: {effort_color}; font-weight: 600;">{effort_icon} {effort_text}</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_split_table(prediction: PredictionResult):
+    """渲染分段配速表 - 有CP点按CP点分段，无CP点按5km分段
+
+    规则：
+    1. 第一行永远是起点
+    2. 中间行：有CP点显示CP点，无CP点按5km间隔
+    3. 最后一行永远是终点
+    """
+    st.subheader("分段详情")
+
+    segments = prediction.segments
+    if not segments:
+        st.info("暂无分段数据")
+        return
+
+    import pandas as pd
+
+    total_distance = prediction.total_distance_km
+    last_seg = segments[-1]
+
+    # 收集所有CP点 (去重，保留第一次出现的位置)
+    cp_points = []
+    seen_cps = set()
+    for seg in segments:
+        cp_name = getattr(seg, 'cp_name', '')
+        if cp_name and cp_name not in seen_cps:
+            cp_points.append({
+                'name': cp_name,
+                'end_km': seg.end_km,
+                'altitude_m': seg.altitude_m,
+                'cumulative_time_min': seg.cumulative_time_min
+            })
+            seen_cps.add(cp_name)
+
+    # 决定显示模式
+    use_cp_mode = len(cp_points) > 0
+
+    # 构建显示行
+    display_rows = []
+
+    # 1. 第一行永远是起点
+    display_rows.append({
+        'name': '起点',
+        'end_km': 0,
+        'altitude_m': segments[0].altitude_m if segments else 0,
+        'cumulative_time_min': 0
+    })
+
+    # 2. 中间行：CP点或5km间隔
+    if use_cp_mode:
+        # 使用CP点模式 - 直接添加所有CP点
+        for cp in cp_points:
+            display_rows.append({
+                'name': cp['name'],
+                'end_km': cp['end_km'],
+                'altitude_m': cp['altitude_m'],
+                'cumulative_time_min': cp['cumulative_time_min']
+            })
+    else:
+        # 使用5km间隔模式
+        for mark_km in range(5, int(total_distance) + 1, 5):
+            # 找到最接近这个距离的段
+            closest_seg = min(segments, key=lambda s: abs(s.end_km - mark_km))
+            display_rows.append({
+                'name': f'{mark_km}km',
+                'end_km': closest_seg.end_km,
+                'altitude_m': closest_seg.altitude_m,
+                'cumulative_time_min': closest_seg.cumulative_time_min
+            })
+
+    # 3. 最后一行永远是终点
+    # 终点始终添加在最后 (不在CP点列表中，CP点只记录中途打卡点)
+    display_rows.append({
+        'name': '终点',
+        'end_km': last_seg.end_km,
+        'altitude_m': last_seg.altitude_m,
+        'cumulative_time_min': last_seg.cumulative_time_min
+    })
+
+    # 计算每段的区间数据 (从上一行到当前行)
+    data = []
+    for i, curr in enumerate(display_rows):
+        prev = display_rows[i - 1] if i > 0 else None
+
+        # 计算本段距离
+        segment_dist = curr['end_km'] - (prev['end_km'] if prev else 0)
+
+        # 计算本段爬升/下降/时间
+        segment_ascent = 0
+        segment_descent = 0
+        segment_time = 0
+
+        if prev:
+            # 汇总这个区间的所有小段数据
+            prev_km = prev['end_km']
+            curr_km = curr['end_km']
+            for seg in segments:
+                if prev_km < seg.end_km <= curr_km:
+                    segment_ascent += getattr(seg, 'ascent_m', 0)
+                    segment_descent += getattr(seg, 'descent_m', 0)
+                    segment_time += seg.predicted_time_min
+
+        # 计算平均速度
+        avg_speed = segment_dist / (segment_time / 60) if segment_time > 0 else 0
+
+        # 格式化显示
+        if i == 0:
+            # 起点
+            data.append({
+                '位置': '🏁 ' + curr['name'],
+                '本段距离(km)': '-',
+                '距离(km)': f"{curr['end_km']:.1f}",
+                '本段爬升(m)': '-',
+                '本段下降(m)': '-',
+                '本段时间': '-',
+                '累计时间': format_time(curr['cumulative_time_min']),
+                '平均速度': '-'
+            })
+        else:
+            # CP点或间隔点或终点
+            name_display = curr['name']
+            if name_display == '终点':
+                name_display = '🏃 终点'
+            else:
+                name_display = '📍 ' + name_display
+
+            data.append({
+                '位置': name_display,
+                '本段距离(km)': f"{segment_dist:.1f}",
+                '距离(km)': f"{curr['end_km']:.1f}",
+                '本段爬升(m)': f"{segment_ascent:.0f}",
+                '本段下降(m)': f"{segment_descent:.0f}",
+                '本段时间': format_time(segment_time),
+                '累计时间': format_time(curr['cumulative_time_min']),
+                '平均速度': f"{avg_speed:.1f} km/h" if avg_speed > 0 else '-'
+            })
+
+    df = pd.DataFrame(data)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # 显示说明
+    if use_cp_mode:
+        st.caption(f"📍 按CP点分段 (共{len(cp_points)}个CP点)")
+    else:
+        st.caption("📍 按5km间隔分段 (GPX文件无CP点数据)")
+
+
+def render_tactical_advice(prediction: PredictionResult):
+    """渲染战术建议 - 现代设计"""
+    importance = prediction.feature_importance
+    duration_hours = prediction.total_time_min / 60
+
+    # 配速策略卡片
+    st.markdown("""
+    <div style="background-color: var(--bg-card);
+                border: 1px solid var(--border);
+                border-radius: 0.75rem;
+                padding: 1.5rem;
+                margin-bottom: 1.5rem;">
+        <h3 style="margin: 0 0 1.25rem 0; color: var(--text-primary); font-size: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span style="color: var(--primary);">⚡</span> 配速策略
+        </h3>
+    """, unsafe_allow_html=True)
+
+    if importance.get('grade_pct', 0) > importance.get('accumulated_distance_km', 0):
+        st.markdown("""
+        <div style="padding: 1rem;
+                    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1) 0%, rgba(239, 68, 68, 0.1) 100%);
+                    border-radius: 0.5rem;
+                    border-left: 3px solid var(--warning);
+                    margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <span style="color: var(--warning); font-weight: 600;">🏔️ 坡度主导型赛道</span>
+            </div>
+            <div style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
+                坡度对你的速度影响最大，建议在<strong style="color: var(--text-primary);">陡坡段保守配速</strong>，保存体力用于平路和下坡。
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="padding: 1rem;
+                    background: linear-gradient(135deg, rgba(6, 182, 212, 0.1) 0%, rgba(99, 102, 241, 0.1) 100%);
+                    border-radius: 0.5rem;
+                    border-left: 3px solid var(--accent);
+                    margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <span style="color: var(--accent); font-weight: 600;">🏃 疲劳累积型赛道</span>
+            </div>
+            <div style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
+                疲劳累积对你的影响更大，建议<strong style="color: var(--text-primary);">前半程控制速度</strong>，避免后程掉速。
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 高难度警告
+    if prediction.elevation_density > 80:
+        st.markdown("""
+        <div style="padding: 1rem;
+                    background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(245, 158, 11, 0.1) 100%);
+                    border-radius: 0.5rem;
+                    border-left: 3px solid var(--danger);
+                    margin-bottom: 1rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <span style="color: var(--danger); font-weight: 600;">⚠️ 高难度预警</span>
+            </div>
+            <div style="color: var(--text-secondary); font-size: 0.875rem; line-height: 1.6;">
+                赛道爬升密度极高，前10km建议配速比预测<strong style="color: var(--text-primary);">慢10%</strong>，避免过早疲劳。
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # 补给建议卡片
+    st.markdown("""
+    <div style="background-color: var(--bg-card);
+                border: 1px solid var(--border);
+                border-radius: 0.75rem;
+                padding: 1.5rem;
+                margin-bottom: 1.5rem;">
+        <h3 style="margin: 0 0 1.25rem 0; color: var(--text-primary); font-size: 1rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span style="color: var(--success);">🥤</span> 补给建议
+        </h3>
+    """, unsafe_allow_html=True)
+
+    if duration_hours > 6:
+        st.markdown(f"""
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;">
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">预计耗时</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">{duration_hours:.1f} 小时</div>
+            </div>
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">能量胶</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">{int(duration_hours)} 支</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+            <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;">补给节奏</div>
+            <div style="display: grid; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">每45-60分钟补充一次能量</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">每小时饮水 500-750ml</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">电解质片每2小时补充一次</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    elif duration_hours > 3:
+        st.markdown(f"""
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;">
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">预计耗时</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">{duration_hours:.1f} 小时</div>
+            </div>
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">能量胶</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">{int(duration_hours)} 支</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+            <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;">补给节奏</div>
+            <div style="display: grid; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">每45分钟补充一次能量</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">及时补充水分</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;">
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">预计耗时</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">{duration_hours:.1f} 小时</div>
+            </div>
+            <div style="padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+                <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">补给建议</div>
+                <div style="color: var(--text-primary); font-size: 1.25rem; font-weight: 700;">少量即可</div>
+            </div>
+        </div>
+        <div style="margin-top: 1rem; padding: 1rem; background-color: var(--bg-secondary); border-radius: 0.5rem;">
+            <div style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem;">补给节奏</div>
+            <div style="display: grid; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">短距离比赛，少量补给即可</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="color: var(--primary);">•</span>
+                    <span style="color: var(--text-secondary); font-size: 0.875rem;">赛前充分补水</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_download_section(prediction: PredictionResult):
+    """渲染下载区域"""
+    st.subheader(":inbox_tray: 下载报告")
+
+    # 获取文件信息
+    snapshot = st.session_state.get('analysis_snapshot', {})
+    gpx_name = snapshot.get('gpx_file', {}).name if snapshot.get('gpx_file') else "未知赛道"
+    fit_names = [f.name for f in snapshot.get('fit_files', [])]
+
+    # 生成报告
+    report_gen = ReportGenerator(prediction, gpx_name=gpx_name, fit_names=fit_names)
+
+    col1, col2 = st.columns(2)
+
+    # 生成报告内容
+    try:
+        html_content = report_gen.generate_html_report(str(ROOT_DIR / 'reports' / 'prediction_report.html'))
+        with open(html_content, 'r', encoding='utf-8') as f:
+            html_data = f.read()
+    except Exception as e:
+        st.error(f"生成HTML报告失败: {str(e)}")
+        html_data = None
+
+    try:
+        txt_content = report_gen.generate_txt_report()
+    except Exception as e:
+        st.error(f"生成TXT报告失败: {str(e)}")
+        txt_content = None
+
+    with col1:
+        if html_data:
+            # 使用HTML download属性避免页面跳转
+            import base64
+            b64_html = base64.b64encode(html_data.encode()).decode()
+            href = f'<a href="data:text/html;base64,{b64_html}" download="trail_prediction_report.html" target="_blank"><button style="width:100%;padding:0.6em 1em;border:none;border-radius:0.5em;background:#FF4B4B;color:white;font-size:1em;cursor:pointer;">📄 下载HTML报告</button></a>'
+            st.markdown(href, unsafe_allow_html=True)
+
+    with col2:
+        if txt_content:
+            import base64
+            b64_txt = base64.b64encode(txt_content.encode()).decode()
+            href = f'<a href="data:text/plain;base64,{b64_txt}" download="trail_prediction_report.txt" target="_blank"><button style="width:100%;padding:0.6em 1em;border:none;border-radius:0.5em;background:#FF4B4B;color:white;font-size:1em;cursor:pointer;">📝 下载TXT报告</button></a>'
+            st.markdown(href, unsafe_allow_html=True)
+
+    st.divider()
+    st.info("💡 HTML报告可保存到手机，方便比赛时查看；TXT报告适合打印或分享")
+
+
+def format_time(minutes: float) -> str:
+    """格式化时间"""
+    hours = int(minutes // 60)
+    mins = int(minutes % 60)
+    secs = int((minutes % 1) * 60)
+    return f"{hours}:{mins:02d}:{secs:02d}"
+
+
+if __name__ == '__main__':
+    main()
