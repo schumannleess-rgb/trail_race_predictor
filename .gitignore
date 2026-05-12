@@ -41,7 +41,6 @@ env/
 temp/
 tokens/
 records/
-reports/*.py
 reports/__pycache__/
 reports/prediction_report.html
 reports/*.log
