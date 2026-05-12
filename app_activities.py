@@ -1,8 +1,10 @@
-"""Garmin 活动下载页面 — 登录 → 拉取 → 筛选 → 选择 → 下载 FIT 到 records/。"""
+"""Garmin 活动下载页面 — 登录 → 拉取 → 筛选 → 选择 → 下载 FIT 到本地。"""
 
+import io
 import re
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import streamlit as st
@@ -16,7 +18,6 @@ from garminconnect import GarminConnectAuthenticationError, GarminConnectConnect
 
 MAX_SELECT = 15
 TOKENSTORE = str(ROOT_DIR / "tokens")
-OUTPUT_DIR = ROOT_DIR / "records"
 
 TYPE_LABEL = {"running": "跑步", "trail_running": "越野跑", "trail_running_v2": "越野跑v2"}
 LABEL_TYPE = {v: k for k, v in TYPE_LABEL.items()}
@@ -53,6 +54,7 @@ def _init_state():
         "selected": [],
         "activity_selector_persist": [],
         "auto_login": True,
+        "downloaded_files": [],  # [(filename, bytes), ...]
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -174,33 +176,58 @@ def _render_download():
         return
 
     st.write(f"已选 {len(sel)} 条")
-    st.caption(f"下载到: records/")
 
     if st.button("下载 FIT 文件", type="primary", use_container_width=True):
         _do_download(sel)
 
+    # 显示已下载文件的下载按钮
+    downloaded = st.session_state.get("downloaded_files", [])
+    if downloaded:
+        st.divider()
+        st.subheader(f"已下载 {len(downloaded)} 个文件，点击保存到本地：")
+
+        for fname, data in downloaded:
+            st.download_button(
+                label=f"📄 {fname}",
+                data=data,
+                file_name=fname,
+                mime="application/octet-stream",
+                key=f"dl_{fname}",
+            )
+
+        # 打包全部下载
+        if len(downloaded) > 1:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname, data in downloaded:
+                    zf.writestr(fname, data)
+            zip_buf.seek(0)
+            st.download_button(
+                label=f"📦 全部下载 (ZIP, {len(downloaded)} 个文件)",
+                data=zip_buf,
+                file_name="garmin_activities.zip",
+                mime="application/zip",
+                key="dl_all_zip",
+            )
+
 
 def _do_download(activities):
     garmin = st.session_state.garmin
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     progress = st.progress(0)
     status = st.empty()
-    ok = skip = fail = 0
+    downloaded = []
+    fail = 0
 
     for i, a in enumerate(activities, 1):
         status.text(f"[{i}/{len(activities)}] {a['name'][:40]}...")
         try:
             fname = re.sub(r'[<>:"/\\|?*]', '', a["name"])
             fname = re.sub(r'\s+', ' ', fname).strip()[:80]
-            fpath = OUTPUT_DIR / f"{fname or 'Unnamed'}_{a['id']}.fit"
+            fname = f"{fname or 'Unnamed'}_{a['id']}.fit"
 
-            if fpath.exists():
-                skip += 1
-            else:
-                data = garmin.download_activity(a["id"], dl_fmt=garmin.ActivityDownloadFormat.ORIGINAL)
-                fpath.write_bytes(data)
-                ok += 1
+            data = garmin.download_activity(a["id"], dl_fmt=garmin.ActivityDownloadFormat.ORIGINAL)
+            downloaded.append((fname, data))
             time.sleep(0.5)
         except Exception:
             fail += 1
@@ -209,13 +236,15 @@ def _do_download(activities):
     status.empty()
     progress.empty()
 
+    st.session_state.downloaded_files = downloaded
+
     if fail == 0:
-        st.success(f"完成: {ok} 下载, {skip} 跳过, {fail} 失败")
+        st.success(f"完成: {len(downloaded)} 个文件下载成功")
         st.balloons()
     else:
-        st.warning(f"完成: {ok} 下载, {skip} 跳过, {fail} 失败")
+        st.warning(f"完成: {len(downloaded)} 成功, {fail} 失败")
 
-    st.info(f"文件已保存到: {OUTPUT_DIR.resolve()}")
+    st.rerun()
 
 
 # ── Main Area ────────────────────────────────────────────
