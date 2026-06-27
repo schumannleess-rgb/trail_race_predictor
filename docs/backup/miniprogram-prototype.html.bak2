@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>越野赛事预测 - 原型</title>
+<style>
+  /* ==================== Reset & Base ==================== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --primary: #4F46E5;
+    --primary-light: #818CF8;
+    --primary-bg: #EEF2FF;
+    --success: #10B981;
+    --success-bg: #ECFDF5;
+    --warning: #F59E0B;
+    --warning-bg: #FFFBEB;
+    --danger: #EF4444;
+    --text: #1F2937;
+    --text-secondary: #6B7280;
+    --text-hint: #9CA3AF;
+    --border: #E5E7EB;
+    --bg: #F9FAFB;
+    --card: #FFFFFF;
+    --radius: 12px;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* ==================== Tab Bar ==================== */
+  .tab-bar {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 480px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    display: flex;
+    padding: 6px 0 calc(6px + var(--safe-bottom));
+    z-index: 100;
+  }
+  .tab-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 0.2s;
+  }
+  .tab-item .icon { font-size: 22px; }
+  .tab-item .label { font-size: 10px; color: var(--text-hint); }
+  .tab-item.active .label { color: var(--primary); font-weight: 600; }
+  .tab-item.active .icon-filter { filter: none; }
+  .icon-filter { filter: grayscale(1) opacity(0.4); }
+
+  /* ==================== Page Container ==================== */
+  .page { display: none; padding-bottom: 80px; min-height: 100vh; }
+  .page.active { display: block; }
+
+  /* ==================== Header ==================== */
+  .page-header {
+    padding: 48px 16px 16px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+  .page-header h1 { font-size: 20px; font-weight: 700; }
+
+  /* ==================== Card ==================== */
+  .card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin: 12px 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .card-title .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-blue { background: var(--primary); }
+  .dot-green { background: var(--success); }
+  .dot-yellow { background: var(--warning); }
+
+  /* ==================== Form ==================== */
+  .form-group { margin-bottom: 14px; }
+  .form-group:last-child { margin-bottom: 0; }
+  .form-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    display: block;
+  }
+  .form-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 15px;
+    background: var(--bg);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .form-input:focus { border-color: var(--primary); }
+  .form-input::placeholder { color: var(--text-hint); }
+  select.form-input { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
+
+  /* ==================== Button ==================== */
+  .btn {
+    width: 100%;
+    padding: 14px;
+    border-radius: var(--radius);
+    border: none;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:active { background: #4338CA; transform: scale(0.98); }
+  .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
+  .btn-outline:active { background: var(--primary-bg); }
+  .btn-sm { padding: 8px 16px; font-size: 13px; width: auto; display: inline-flex; align-items: center; gap: 4px; border-radius: 8px; }
+  .btn-block { display: block; }
+
+  /* ==================== Data List ==================== */
+  .data-item {
+    display: flex;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .data-item:last-child { border-bottom: none; }
+  .data-icon {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    margin-right: 12px;
+    flex-shrink: 0;
+  }
+  .data-icon-gpx { background: var(--primary-bg); }
+  .data-icon-fit { background: var(--success-bg); }
+  .data-info { flex: 1; min-width: 0; }
+  .data-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .data-meta { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
+  .data-action { flex-shrink: 0; margin-left: 8px; }
+
+  /* ==================== Result Display ==================== */
+  .result-hero {
+    text-align: center;
+    padding: 24px 16px;
+  }
+  .result-big { font-size: 48px; font-weight: 800; color: var(--primary); line-height: 1; }
+  .result-unit { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
+  .result-label { font-size: 12px; color: var(--text-hint); margin-top: 8px; }
+  .result-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .result-cell {
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 12px 8px;
+    text-align: center;
+  }
+  .result-cell-value { font-size: 18px; font-weight: 700; }
+  .result-cell-label { font-size: 11px; color: var(--text-hint); margin-top: 4px; }
+
+  /* ==================== Empty State ==================== */
+  .empty-state {
+    text-align: center;
+    padding: 48px 32px;
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
+  .empty-text { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+
+  /* ==================== Upload Zone ==================== */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 32px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    margin: 12px 16px;
+  }
+  .upload-zone:active { border-color: var(--primary); }
+  .upload-icon { font-size: 32px; opacity: 0.4; margin-bottom: 8px; }
+  .upload-text { font-size: 14px; color: var(--text-secondary); }
+  .upload-hint { font-size: 12px; color: var(--text-hint); margin-top: 4px; }
+
+  /* ==================== Stat Row ==================== */
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text-secondary); }
+  .stat-value { font-weight: 500; }
+
+  /* ==================== Toggle ==================== */
+  .toggle {
+    width: 44px; height: 24px;
+    background: var(--border);
+    border-radius: 12px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .toggle.on { background: var(--primary); }
+  .toggle::after {
+    content: '';
+    width: 20px; height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    position: absolute;
+    top: 2px; left: 2px;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .toggle.on::after { transform: translateX(20px); }
+
+  /* ==================== Setting Row ==================== */
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-label { font-size: 14px; }
+  .setting-desc { font-size: 12px; color: var(--text-hint); margin-top: 2px; }
+  .setting-value { font-size: 14px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+
+  /* ==================== Profile ==================== */
+  .profile-header {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    padding: 48px 16px 24px;
+    color: #fff;
+    text-align: center;
+  }
+  .profile-avatar {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28px;
+    margin: 0 auto 8px;
+  }
+  .profile-name { font-size: 18px; font-weight: 600; }
+  .profile-id { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+  .profile-menu { margin: 12px 16px; background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  .menu-item {
+    display: flex;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .menu-item:last-child { border-bottom: none; }
+  .menu-item:active { background: var(--bg); }
+  .menu-icon { font-size: 20px; margin-right: 12px; width: 28px; text-align: center; }
+  .menu-text { flex: 1; font-size: 14px; }
+  .menu-arrow { color: var(--text-hint); font-size: 14px; }
+
+  /* ==================== Prediction Page ==================== */
+  .predict-hero {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    padding: 48px 24px 24px;
+    color: #fff;
+    text-align: center;
+  }
+  .predict-hero h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .predict-hero p { font-size: 13px; opacity: 0.8; }
+  .race-info-row {
+    display: flex;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .race-info-row:last-child { border-bottom: none; }
+  .race-info-label { color: var(--text-secondary); width: 80px; flex-shrink: 0; }
+  .race-info-value { font-weight: 500; }
+  .race-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-green { background: var(--success-bg); color: var(--success); }
+  .badge-yellow { background: var(--warning-bg); color: var(--warning); }
+
+  /* ==================== Modal ==================== */
+  .modal-mask {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 200;
+    display: none;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .modal-mask.show { display: flex; }
+  .modal-sheet {
+    background: var(--card);
+    border-radius: 16px 16px 0 0;
+    width: 100%;
+    max-width: 480px;
+    padding: 24px 16px calc(24px + var(--safe-bottom));
+    animation: slideUp 0.25s ease-out;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+  .modal-title { font-size: 16px; font-weight: 600; text-align: center; margin-bottom: 16px; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .modal-actions .btn { flex: 1; }
+
+  /* ==================== Report Tabs ==================== */
+  .report-tab {
+    flex: 1;
+    padding: 6px 4px;
+    border: none;
+    background: transparent;
+    font-size: 12px;
+    color: var(--text-hint);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .report-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+
+  /* ==================== Pulse Animation ==================== */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.1); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== Tab: 数据 ==================== -->
+<div class="page" id="page-data">
+  <div class="page-header">
+    <h1>我的数据</h1>
+  </div>
+
+  <!-- 赛道 GPX 区块 -->
+  <div class="card">
+    <div class="card-title" style="justify-content: space-between;">
+      <span><span class="dot dot-blue"></span> 赛道 GPX</span>
+      <button class="btn btn-sm btn-outline" onclick="showToast('导入 GPX', '模拟：从手机选择 GPX 文件')">＋ 添加</button>
+    </div>
+    <div id="gpx-list">
+      <div class="data-item">
+        <div class="data-icon data-icon-gpx">📍</div>
+        <div class="data-info">
+          <div class="data-name">莫干山越野赛.gpx</div>
+          <div class="data-meta">23.5km · 1,200m+ · 128KB · 5月16日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除莫干山越野赛.gpx？')">删除</button></div>
+      </div>
+      <div class="data-item">
+        <div class="data-icon data-icon-gpx">📍</div>
+        <div class="data-info">
+          <div class="data-name">四姑娘山50K.gpx</div>
+          <div class="data-meta">48.3km · 3,200m+ · 256KB · 5月10日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除四姑娘山50K.gpx？')">删除</button></div>
+      </div>
+      <div class="data-item">
+        <div class="data-icon data-icon-gpx">📍</div>
+        <div class="data-info">
+          <div class="data-name">柴古唐斯100K.gpx</div>
+          <div class="data-meta">98.5km · 6,800m+ · 512KB · 5月5日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除柴古唐斯100K.gpx？')">删除</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 训练 FIT 区块 -->
+  <div class="card">
+    <div class="card-title" style="justify-content: space-between;">
+      <span><span class="dot dot-green"></span> 训练 FIT</span>
+      <button class="btn btn-sm btn-outline" onclick="showToast('导入 FIT', '模拟：从手机选择 FIT 文件')">＋ 添加</button>
+    </div>
+    <div id="fit-list">
+      <div class="data-item">
+        <div class="data-icon data-icon-fit">⌚</div>
+        <div class="data-info">
+          <div class="data-name">上周训练.fit</div>
+          <div class="data-meta">15.2km · 680m+ · 85KB · 5月14日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除上周训练.fit？')">删除</button></div>
+      </div>
+      <div class="data-item">
+        <div class="data-icon data-icon-fit">⌚</div>
+        <div class="data-info">
+          <div class="data-name">间歇训练.fit</div>
+          <div class="data-meta">8.5km · 120m+ · 42KB · 5月12日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除间歇训练.fit？')">删除</button></div>
+      </div>
+      <div class="data-item">
+        <div class="data-icon data-icon-fit">⌚</div>
+        <div class="data-info">
+          <div class="data-name">长距离拉练.fit</div>
+          <div class="data-meta">28.7km · 950m+ · 120KB · 5月10日导入</div>
+        </div>
+        <div class="data-action"><button class="btn btn-sm" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('删除', '确认删除长距离拉练.fit？')">删除</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Garmin 同步入口 -->
+  <div style="padding: 0 16px 8px;">
+    <button class="btn btn-outline" onclick="switchTab('me')">
+      ⌚ 从 Garmin 获取数据
+    </button>
+  </div>
+
+  <!-- 存储信息 -->
+  <div style="padding: 0 16px 16px;">
+    <div style="background:var(--bg); border-radius:8px; padding:10px 12px; font-size:12px; color:var(--text-secondary);">
+      <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+        <span>本地存储</span>
+        <span>2.4 MB / 10 MB</span>
+      </div>
+      <div style="background:var(--border); border-radius:4px; height:4px; overflow:hidden;">
+        <div style="background:var(--primary); width:24%; height:100%; border-radius:4px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Tab: 预测 ==================== -->
+<div class="page active" id="page-predict">
+  <!-- 状态 1：初始介绍页 -->
+  <div id="predict-intro">
+    <div class="predict-hero">
+      <h1>Trail Master</h1>
+      <p style="font-size: 14px; margin-top: 4px;">越野赛成绩预测系统</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">📖 关于</div>
+      <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.8;">
+        Trail Master 是一款基于机器学习的越野赛事完赛时间预测工具。系统通过分析你的历史训练数据（FIT 文件中的距离、爬升、心率、配速等指标）和目标赛道信息（GPX 文件中的距离、海拔变化、坡度分布），利用 LightGBM 模型预测你的完赛时间、各检查点到达时间和建议配速策略。
+      </p>
+      <div style="margin-top: 12px; font-size: 14px; color: var(--text-secondary); line-height: 2;">
+        <div><strong>使用步骤：</strong></div>
+        <div>1. 在「数据」中导入赛道 GPX 和训练 FIT 文件</div>
+        <div>2. 在「设置」中选择目标赛道和训练记录</div>
+        <div>3. 调整能力系数（保守 / 激进）</div>
+        <div>4. 点击「开始预测」查看结果</div>
+      </div>
+      <div style="margin-top: 16px;">
+        <button class="btn btn-primary" onclick="startPredict()">🏔️ 开始预测</button>
+      </div>
+    </div>
+
+    <!-- 历史预测 -->
+    <div class="card">
+      <div class="card-title"><span class="dot dot-blue"></span>历史预测</div>
+      <div class="data-item" onclick="viewHistory(0)" style="cursor:pointer;">
+        <div class="data-info">
+          <div class="data-name">莫干山越野赛 30K</div>
+          <div class="data-meta">5月15日 · 4:32:00 · 努力程度：中高</div>
+        </div>
+        <span style="color:var(--text-hint);">›</span>
+      </div>
+      <div class="data-item" onclick="viewHistory(1)" style="cursor:pointer;">
+        <div class="data-info">
+          <div class="data-name">四姑娘山 50K</div>
+          <div class="data-meta">5月10日 · 8:15:00 · 努力程度：中</div>
+        </div>
+        <span style="color:var(--text-hint);">›</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 状态 2：预测过程中 -->
+  <div id="predict-loading" style="display:none;">
+    <div style="text-align:center; padding: 80px 32px;">
+      <div style="font-size:48px; margin-bottom:16px; animation: pulse 1.5s infinite;">⏳</div>
+      <div style="font-size:18px; font-weight:600; margin-bottom:8px;">预测中...</div>
+      <div style="font-size:13px; color:var(--text-secondary);">正在分析赛道和训练数据</div>
+    </div>
+  </div>
+
+  <!-- 状态 3：预测报告 -->
+  <div id="predict-report" style="display:none;">
+    <!-- 成功提示 -->
+    <div style="padding:16px 16px 0;">
+      <div style="background:var(--success-bg); border-radius:var(--radius); padding:12px 16px; font-size:14px; color:var(--success); font-weight:500;">
+        ✅ 预测完成
+      </div>
+    </div>
+
+    <!-- 4 个核心指标 -->
+    <div class="card">
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="result-cell">
+          <div class="result-cell-value" style="color:var(--primary);">4:32:00</div>
+          <div class="result-cell-label">完赛时间</div>
+        </div>
+        <div class="result-cell">
+          <div class="result-cell-value">8:20</div>
+          <div class="result-cell-label">平均配速 min/km</div>
+        </div>
+        <div class="result-cell">
+          <div class="result-cell-value">7.24</div>
+          <div class="result-cell-label">平均速度 km/h</div>
+        </div>
+        <div class="result-cell">
+          <div class="result-cell-value">1,450m</div>
+          <div class="result-cell-label">总爬升</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 报告子 Tab -->
+    <div class="card" style="padding:12px 16px;">
+      <div style="display:flex; gap:4px; border-bottom:1px solid var(--border); padding-bottom:8px;">
+        <button class="report-tab active" onclick="switchReportTab(0, this)">赛道概览</button>
+        <button class="report-tab" onclick="switchReportTab(1, this)">分段配速</button>
+        <button class="report-tab" onclick="switchReportTab(2, this)">战术建议</button>
+        <button class="report-tab" onclick="switchReportTab(3, this)">导出</button>
+      </div>
+
+      <!-- 子 Tab 1：赛道概览 -->
+      <div class="report-panel active" id="report-panel-0">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+          <!-- 赛道信息 -->
+          <div>
+            <div style="font-size:13px; font-weight:600; margin-bottom:8px; color:var(--primary);">🏔️ 赛道信息</div>
+            <div class="stat-row"><span class="stat-label">总距离</span><span class="stat-value">32.50 km</span></div>
+            <div class="stat-row"><span class="stat-label">总爬升</span><span class="stat-value">1,450 m</span></div>
+            <div class="stat-row"><span class="stat-label">总下降</span><span class="stat-value">1,380 m</span></div>
+            <div class="stat-row"><span class="stat-label">海拔密度</span><span class="stat-value">44.6 m/km</span></div>
+            <div class="stat-row"><span class="stat-label">难度</span><span class="stat-value" style="color:var(--warning);">中等</span></div>
+          </div>
+          <!-- 能力画像 -->
+          <div>
+            <div style="font-size:13px; font-weight:600; margin-bottom:8px; color:var(--success);">🏃 能力画像</div>
+            <div class="stat-row"><span class="stat-label">平均训练速度</span><span class="stat-value">7.8 km/h</span></div>
+            <div class="stat-row"><span class="stat-label">P50 日常</span><span class="stat-value">7.5 km/h</span></div>
+            <div class="stat-row"><span class="stat-label">P90 最佳</span><span class="stat-value">8.6 km/h</span></div>
+            <div class="stat-row"><span class="stat-label">努力系数</span><span class="stat-value" id="report-effort">1.00x</span></div>
+            <div class="stat-row"><span class="stat-label">策略</span><span class="stat-value" id="report-strategy">稳健完赛</span></div>
+          </div>
+        </div>
+        <div style="margin-top:12px; background:var(--primary-bg); border-radius:8px; padding:10px 12px; font-size:12px; color:var(--primary); line-height:1.6;">
+          💡 你的极限比日常快 <span id="report-range">15%</span>，比赛时可挑战最佳状态！
+        </div>
+      </div>
+
+      <!-- 子 Tab 2：分段配速 -->
+      <div class="report-panel" id="report-panel-1" style="display:none;">
+        <div style="margin-top:12px; overflow-x:auto;">
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <thead>
+              <tr style="border-bottom:2px solid var(--border); color:var(--text-hint); text-align:left;">
+                <th style="padding:8px 4px;">位置</th>
+                <th style="padding:8px 4px;">本段km</th>
+                <th style="padding:8px 4px;">累计km</th>
+                <th style="padding:8px 4px;">爬升m</th>
+                <th style="padding:8px 4px;">下降m</th>
+                <th style="padding:8px 4px;">本段用时</th>
+                <th style="padding:8px 4px;">累计用时</th>
+                <th style="padding:8px 4px;">速度</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:8px 4px;">🏁 起点</td>
+                <td style="padding:8px 4px;">-</td>
+                <td style="padding:8px 4px;">0.0</td>
+                <td style="padding:8px 4px;">-</td>
+                <td style="padding:8px 4px;">-</td>
+                <td style="padding:8px 4px;">-</td>
+                <td style="padding:8px 4px;">0:00</td>
+                <td style="padding:8px 4px;">-</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:8px 4px;">📍 CP1</td>
+                <td style="padding:8px 4px;">10.0</td>
+                <td style="padding:8px 4px;">10.0</td>
+                <td style="padding:8px 4px;">420</td>
+                <td style="padding:8px 4px;">380</td>
+                <td style="padding:8px 4px;">1:12:00</td>
+                <td style="padding:8px 4px;">1:12:00</td>
+                <td style="padding:8px 4px;">8.3</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:8px 4px;">📍 CP2</td>
+                <td style="padding:8px 4px;">10.0</td>
+                <td style="padding:8px 4px;">20.0</td>
+                <td style="padding:8px 4px;">530</td>
+                <td style="padding:8px 4px;">480</td>
+                <td style="padding:8px 4px;">1:26:00</td>
+                <td style="padding:8px 4px;">2:38:00</td>
+                <td style="padding:8px 4px;">7.1</td>
+              </tr>
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:8px 4px;">📍 CP3</td>
+                <td style="padding:8px 4px;">10.0</td>
+                <td style="padding:8px 4px;">30.0</td>
+                <td style="padding:8px 4px;">380</td>
+                <td style="padding:8px 4px;">350</td>
+                <td style="padding:8px 4px;">1:32:00</td>
+                <td style="padding:8px 4px;">4:10:00</td>
+                <td style="padding:8px 4px;">6.5</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 4px;">🏃 终点</td>
+                <td style="padding:8px 4px;">2.5</td>
+                <td style="padding:8px 4px;">32.5</td>
+                <td style="padding:8px 4px;">120</td>
+                <td style="padding:8px 4px;">170</td>
+                <td style="padding:8px 4px;">0:22:00</td>
+                <td style="padding:8px 4px; font-weight:700; color:var(--primary);">4:32:00</td>
+                <td style="padding:8px 4px;">6.8</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="margin-top:8px; font-size:11px; color:var(--text-hint); text-align:center;">按 CP 点分段（共 3 个 CP 点）</div>
+      </div>
+
+      <!-- 子 Tab 3：战术建议 -->
+      <div class="report-panel" id="report-panel-2" style="display:none;">
+        <div style="margin-top:12px;">
+          <div style="font-size:13px; font-weight:600; margin-bottom:8px;">🎯 配速策略</div>
+          <div style="font-size:13px; color:var(--text-secondary); line-height:1.8; background:var(--bg); padding:12px; border-radius:8px;">
+            本赛道海拔密度 44.6 m/km，坡度影响中等。建议前 10km 控制节奏不要过快，利用 CP1-CP2 的平缓段建立优势。后半程注意疲劳累积，保持稳定配速完成。
+          </div>
+        </div>
+        <div style="margin-top:16px;">
+          <div style="font-size:13px; font-weight:600; margin-bottom:8px;">🥤 补给建议</div>
+          <div style="font-size:13px; color:var(--text-secondary); line-height:1.8; background:var(--bg); padding:12px; border-radius:8px;">
+            预计用时约 4.5 小时，建议携带 5-6 支能量胶，每 45 分钟补给一次。饮水量 500-750ml/小时，CP 点注意补充电解质。
+          </div>
+        </div>
+      </div>
+
+      <!-- 子 Tab 4：导出 -->
+      <div class="report-panel" id="report-panel-3" style="display:none;">
+        <div style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
+          <button class="btn btn-outline" onclick="showToast('分享卡片', '模拟：wx.shareAppMessage，对方收到链接卡片，点开可查看简化版预测结果')">📤 生成分享卡片</button>
+          <button class="btn btn-outline" onclick="showToast('保存报告', '模拟：生成 HTML 格式完整预测报告，保存到手机本地，可在浏览器中打开')">💾 保存报告（HTML）</button>
+        </div>
+        <div style="margin-top:16px; background:var(--bg); border-radius:8px; padding:12px; font-size:12px; color:var(--text-hint); line-height:1.6;">
+          💡 分享卡片是链接形式，对方点开看到简化版结果页。保存报告是完整 HTML 文件，含分段配速和战术建议。
+        </div>
+      </div>
+    </div>
+
+    <!-- 操作按钮 -->
+    <div style="padding: 0 16px 16px; display: flex; gap: 10px;">
+      <button class="btn btn-outline" style="flex:1;" onclick="resetPredict()">再次预测</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Tab: 设置 ==================== -->
+<div class="page" id="page-settings">
+  <div class="page-header">
+    <h1>预测设置</h1>
+  </div>
+
+  <!-- 选择赛道 GPX -->
+  <div class="card">
+    <div class="card-title"><span class="dot dot-blue"></span>选择赛道 GPX</div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-sm btn-outline" style="flex:1;" onclick="showModal('select-gpx')">📁 从存储选择</button>
+      <button class="btn btn-sm btn-outline" style="flex:1;" onclick="showToast('导入 GPX', '模拟：打开手机文件选择器')">📂 从本地文件选择</button>
+    </div>
+    <div id="gpx-selected" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+      当前：<span id="gpx-name" style="color: var(--text); font-weight: 500;">莫干山越野赛.gpx</span>
+    </div>
+  </div>
+
+  <!-- 选择训练记录 FIT -->
+  <div class="card">
+    <div class="card-title"><span class="dot dot-green"></span>选择训练记录 FIT</div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-sm btn-outline" style="flex:1;" onclick="showModal('select-fit')">📁 从存储选择</button>
+      <button class="btn btn-sm btn-outline" style="flex:1;" onclick="showToast('导入 FIT', '模拟：打开手机文件选择器')">📂 从本地文件选择</button>
+    </div>
+    <div id="fit-selected" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary);">
+      <div id="fit-file-list" style="color: var(--text); font-weight: 500;">
+        <div style="padding: 2px 0;">· 上周训练.fit</div>
+        <div style="padding: 2px 0;">· 间歇训练.fit</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 能力系数滑块 -->
+  <div class="card">
+    <div class="card-title"><span class="dot dot-yellow"></span>能力系数</div>
+    <div style="padding: 8px 0;">
+      <input type="range" id="effort-slider" min="80" max="120" value="100"
+        style="width: 100%; accent-color: var(--primary);"
+        oninput="updateEffort(this.value)">
+      <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-hint); margin-top: 4px;">
+        <span>保守</span>
+        <span id="effort-value" style="font-size: 16px; font-weight: 700; color: var(--primary);">1.0</span>
+        <span>激进</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Modal: 选择 GPX ==================== -->
+<div class="modal-mask" id="modal-select-gpx" onclick="closeModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-title">选择赛道 GPX</div>
+    <div class="data-item" onclick="selectGPX('莫干山越野赛.gpx')" style="cursor:pointer;">
+      <div class="data-icon data-icon-gpx">📍</div>
+      <div class="data-info">
+        <div class="data-name">莫干山越野赛.gpx</div>
+        <div class="data-meta">23.5km · 1,200m+</div>
+      </div>
+      <span id="gpx-check-0" style="font-size:18px; color:var(--primary);">✓</span>
+    </div>
+    <div class="data-item" onclick="selectGPX('四姑娘山50K.gpx')" style="cursor:pointer;">
+      <div class="data-icon data-icon-gpx">📍</div>
+      <div class="data-info">
+        <div class="data-name">四姑娘山50K.gpx</div>
+        <div class="data-meta">48.3km · 3,200m+</div>
+      </div>
+      <span id="gpx-check-1" style="font-size:18px; color:var(--primary);"></span>
+    </div>
+    <div class="modal-actions" style="margin-top: 16px;">
+      <button class="btn btn-primary" onclick="closeModal()">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Modal: 选择 FIT ==================== -->
+<div class="modal-mask" id="modal-select-fit" onclick="closeModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-title">选择训练记录 FIT</div>
+    <div class="data-item" onclick="toggleFit(this)" style="cursor:pointer;">
+      <div class="data-icon data-icon-fit">⌚</div>
+      <div class="data-info">
+        <div class="data-name">上周训练.fit</div>
+        <div class="data-meta">15.2km · 680m+</div>
+      </div>
+      <span class="fit-check" style="font-size:18px; color:var(--primary);">✓</span>
+    </div>
+    <div class="data-item" onclick="toggleFit(this)" style="cursor:pointer;">
+      <div class="data-icon data-icon-fit">⌚</div>
+      <div class="data-info">
+        <div class="data-name">间歇训练.fit</div>
+        <div class="data-meta">8.5km · 120m+</div>
+      </div>
+      <span class="fit-check" style="font-size:18px; color:var(--primary);">✓</span>
+    </div>
+    <div class="data-item" onclick="toggleFit(this)" style="cursor:pointer;">
+      <div class="data-icon data-icon-fit">⌚</div>
+      <div class="data-info">
+        <div class="data-name">长距离拉练.fit</div>
+        <div class="data-meta">28.7km · 950m+</div>
+      </div>
+      <span class="fit-check" style="font-size:18px; color:var(--primary);"></span>
+    </div>
+    <div style="margin-top: 12px; font-size: 13px; color: var(--text-hint); text-align: center;">
+      已选 <span id="fit-select-count">2</span> 个文件
+    </div>
+    <div class="modal-actions" style="margin-top: 8px;">
+      <button class="btn btn-primary" onclick="closeModal()">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Tab: 我的 ==================== -->
+<div class="page" id="page-me">
+  <!-- 未登录状态 -->
+  <div id="me-logged-out">
+    <div class="profile-header" style="background: linear-gradient(135deg, #6B7280, #9CA3AF);">
+      <div class="profile-avatar">🔐</div>
+      <div class="profile-name">未登录</div>
+      <div class="profile-id">登录 Garmin Connect 同步训练数据</div>
+    </div>
+    <div style="padding: 24px 16px;">
+      <button class="btn btn-primary" onclick="showModal('garmin-login')">⌚ Garmin Connect 登录</button>
+    </div>
+    <div style="padding: 0 16px; text-align: center; color: var(--text-hint); font-size: 13px; line-height: 1.8;">
+      登录后可以同步 Garmin Connect<br>中的训练活动数据
+    </div>
+  </div>
+
+  <!-- 已登录状态（默认隐藏） -->
+  <div id="me-logged-in" style="display:none;">
+    <div class="profile-header">
+      <div class="profile-avatar">🏃</div>
+      <div class="profile-name">jiamingxxx</div>
+      <div class="profile-id">Garmin Connect 已连接</div>
+    </div>
+
+  <!-- 筛选条件 -->
+  <div class="card">
+    <div class="card-title"><span class="dot dot-blue"></span>筛选条件</div>
+    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <button class="btn btn-sm" style="background:var(--primary);color:#fff;border:none;flex:1;">跑步</button>
+      <button class="btn btn-sm" style="background:var(--primary-bg);color:var(--primary);border:1px solid var(--primary);flex:1;">越野跑</button>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+      <div class="form-group">
+        <label class="form-label">年份</label>
+        <select class="form-input"><option>2026</option><option>2025</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">月份</label>
+        <select class="form-input"><option>5月</option><option>4月</option><option>3月</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">距离</label>
+        <select class="form-input"><option>10-50km</option><option>&lt;5km</option><option>5-10km</option><option>50km+</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">爬升</label>
+        <select class="form-input"><option>1000m+</option><option>&lt;500m</option><option>500-1000m</option><option>2000m+</option></select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 活动列表 -->
+  <div class="card">
+    <div class="card-title"><span class="dot dot-green"></span>活动列表</div>
+    <div class="data-item" onclick="toggleActivity(this)" style="cursor:pointer;">
+      <input type="checkbox" checked style="width:18px;height:18px;margin-right:12px;accent-color:var(--primary);">
+      <div class="data-icon data-icon-fit" style="width:36px;height:36px;font-size:15px;">⌚</div>
+      <div class="data-info">
+        <div class="data-name">5/12 越野跑 25km</div>
+        <div class="data-meta">爬升 1,200m · 3:15:00</div>
+      </div>
+    </div>
+    <div class="data-item" onclick="toggleActivity(this)" style="cursor:pointer;">
+      <input type="checkbox" checked style="width:18px;height:18px;margin-right:12px;accent-color:var(--primary);">
+      <div class="data-icon data-icon-fit" style="width:36px;height:36px;font-size:15px;">⌚</div>
+      <div class="data-info">
+        <div class="data-name">5/10 跑步 10km</div>
+        <div class="data-meta">爬升 80m · 0:52:00</div>
+      </div>
+    </div>
+    <div class="data-item" onclick="toggleActivity(this)" style="cursor:pointer;">
+      <input type="checkbox" style="width:18px;height:18px;margin-right:12px;accent-color:var(--primary);">
+      <div class="data-icon data-icon-fit" style="width:36px;height:36px;font-size:15px;">⌚</div>
+      <div class="data-info">
+        <div class="data-name">5/08 跑步 5km</div>
+        <div class="data-meta">爬升 20m · 0:28:00</div>
+      </div>
+    </div>
+    <div class="data-item" onclick="toggleActivity(this)" style="cursor:pointer;">
+      <input type="checkbox" checked style="width:18px;height:18px;margin-right:12px;accent-color:var(--primary);">
+      <div class="data-icon data-icon-fit" style="width:36px;height:36px;font-size:15px;">⌚</div>
+      <div class="data-info">
+        <div class="data-name">5/05 越野跑 30km</div>
+        <div class="data-meta">爬升 1,800m · 4:30:00</div>
+      </div>
+    </div>
+    <div style="margin-top: 12px; font-size: 13px; color: var(--text-hint); text-align: center;">
+      已选 <span id="activity-count">3</span> 条
+    </div>
+  </div>
+
+  <!-- 操作按钮 -->
+  <div style="padding: 0 16px 12px; display: flex; gap: 10px;">
+    <button class="btn btn-outline" style="flex:1;" onclick="showToast('下载', '模拟：将 FIT 文件下载到手机本地存储')">📥 下载到手机</button>
+    <button class="btn btn-primary" style="flex:1;" onclick="showToast('同步', '模拟：将 FIT 文件保存到小程序数据存储')">📁 加入数据存储</button>
+  </div>
+
+  <!-- 退出登录 -->
+  <div style="padding: 0 16px 16px;">
+    <button class="btn btn-sm btn-block" style="background:var(--danger);color:#fff;border:none;" onclick="showConfirm('退出登录', '确认退出 Garmin Connect 账号？', garminLogout)">
+      退出登录
+    </button>
+  </div>
+  </div>
+</div>
+
+<!-- ==================== Tab Bar ==================== -->
+<div class="tab-bar">
+  <div class="tab-item" onclick="switchTab('data')">
+    <span class="icon icon-filter">📁</span>
+    <span class="label">数据</span>
+  </div>
+  <div class="tab-item active" onclick="switchTab('predict')">
+    <span class="icon icon-filter">🎯</span>
+    <span class="label">预测</span>
+  </div>
+  <div class="tab-item" onclick="switchTab('settings')">
+    <span class="icon icon-filter">⚙️</span>
+    <span class="label">设置</span>
+  </div>
+  <div class="tab-item" onclick="switchTab('me')">
+    <span class="icon icon-filter">👤</span>
+    <span class="label">我的</span>
+  </div>
+</div>
+
+<!-- ==================== Modal: Garmin 登录 ==================== -->
+<div class="modal-mask" id="modal-garmin-login" onclick="closeModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <div class="modal-title">Garmin Connect 登录</div>
+    <div style="text-align: center; padding: 16px 0;">
+      <div style="font-size: 48px; margin-bottom: 12px;">⌚</div>
+      <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.6;">
+        登录后自动同步最近的训练活动
+      </p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">用户名 / 邮箱</label>
+      <input class="form-input" placeholder="请输入 Garmin 账号" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">密码</label>
+      <input class="form-input" type="password" placeholder="请输入密码" />
+    </div>
+    <button class="btn btn-primary" style="margin-top: 12px;" onclick="garminLogin()">
+      登录
+    </button>
+    <div class="modal-actions" style="margin-top: 8px;">
+      <button class="btn btn-outline" onclick="closeModal()">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Modal: 存储空间不足 ==================== -->
+<div class="modal-mask" id="modal-storage-full" onclick="closeModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="padding-bottom: 24px;">
+    <div class="modal-title">存储空间不足</div>
+    <p style="text-align:center; font-size:14px; color:var(--text-secondary); line-height: 1.6;">
+      本地存储已达上限（10MB），请清理旧文件后重试
+    </p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">知道了</button>
+      <button class="btn btn-primary" onclick="closeModal(); switchTab('data');">去清理</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== Toast ==================== -->
+<div id="toast" style="position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(0,0,0,0.75); color:#fff; padding:12px 24px; border-radius:8px; font-size:14px; z-index:300; display:none; max-width:280px; text-align:center;"></div>
+
+<!-- ==================== Confirm Dialog ==================== -->
+<div class="modal-mask" id="modal-confirm" onclick="closeConfirm()">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="padding-bottom: 24px;">
+    <div class="modal-title" id="confirm-title">确认</div>
+    <p style="text-align:center; font-size:14px; color:var(--text-secondary);" id="confirm-msg">确认执行此操作？</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeConfirm()">取消</button>
+      <button class="btn btn-primary" onclick="confirmAction()">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== Tab Switch ====================
+function switchTab(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  const tabs = ['data','predict','settings','me'];
+  const idx = tabs.indexOf(name);
+  document.querySelectorAll('.tab-item')[idx].classList.add('active');
+}
+
+
+// ==================== Predict: Flow ====================
+// 预测流程：介绍页 → 加载 → 报告 → 历史查看
+function startPredict() {
+  // show loading
+  document.getElementById('predict-intro').style.display = 'none';
+  document.getElementById('predict-report').style.display = 'none';
+  document.getElementById('predict-loading').style.display = 'block';
+  // simulate prediction process
+  setTimeout(() => {
+    document.getElementById('predict-loading').style.display = 'none';
+    document.getElementById('predict-report').style.display = 'block';
+    document.getElementById('predict-report').scrollIntoView({ behavior: 'smooth' });
+  }, 2000);
+}
+
+function resetPredict() {
+  document.getElementById('predict-intro').style.display = 'block';
+  document.getElementById('predict-loading').style.display = 'none';
+  document.getElementById('predict-report').style.display = 'none';
+}
+
+function viewHistory(idx) {
+  // 点击历史预测 → 直接展示报告（同一份文档）
+  document.getElementById('predict-intro').style.display = 'none';
+  document.getElementById('predict-loading').style.display = 'none';
+  document.getElementById('predict-report').style.display = 'block';
+  document.getElementById('predict-report').scrollIntoView({ behavior: 'smooth' });
+  // 实际应用中根据 idx 加载对应报告数据
+}
+
+// ==================== Predict: Report Sub-Tabs ====================
+function switchReportTab(idx, el) {
+  // update tab buttons
+  document.querySelectorAll('.report-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  // update panels
+  document.querySelectorAll('.report-panel').forEach(p => p.style.display = 'none');
+  document.getElementById('report-panel-' + idx).style.display = 'block';
+}
+
+// ==================== Settings: Effort Slider ====================
+function updateEffort(val) {
+  document.getElementById('effort-value').textContent = (val / 100).toFixed(1);
+}
+
+// ==================== Settings: Select GPX ====================
+let currentGPX = '莫干山越野赛.gpx';
+function selectGPX(name) {
+  currentGPX = name;
+  document.getElementById('gpx-name').textContent = name;
+  const checks = ['gpx-check-0', 'gpx-check-1'];
+  const names = ['莫干山越野赛.gpx', '四姑娘山50K.gpx'];
+  checks.forEach((id, i) => {
+    document.getElementById(id).textContent = names[i] === name ? '✓' : '';
+  });
+}
+
+// ==================== Settings: Toggle FIT ====================
+function toggleFit(el) {
+  const check = el.querySelector('.fit-check');
+  check.textContent = check.textContent === '✓' ? '' : '✓';
+  const items = document.querySelectorAll('#modal-select-fit .data-item');
+  let fileNames = [];
+  let count = 0;
+  items.forEach(item => {
+    const c = item.querySelector('.fit-check');
+    if (c.textContent === '✓') {
+      fileNames.push(item.querySelector('.data-name').textContent);
+      count++;
+    }
+  });
+  document.getElementById('fit-select-count').textContent = count;
+  const listEl = document.getElementById('fit-file-list');
+  if (count === 0) {
+    listEl.innerHTML = '<div style="padding: 2px 0; color: var(--text-hint);">未选择文件</div>';
+  } else {
+    listEl.innerHTML = fileNames.map(n => '<div style="padding: 2px 0;">· ' + n + '</div>').join('');
+  }
+}
+
+// ==================== Modal ====================
+function showModal(id) {
+  document.getElementById('modal-' + id).classList.add('show');
+}
+function closeModal(e) {
+  if (e && e.target !== e.currentTarget) return;
+  document.querySelectorAll('.modal-mask').forEach(m => m.classList.remove('show'));
+}
+
+// ==================== Confirm ====================
+let confirmCallback = null;
+function showConfirm(title, msg, cb) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-msg').textContent = msg;
+  confirmCallback = cb || null;
+  document.getElementById('modal-confirm').classList.add('show');
+}
+function closeConfirm() {
+  document.getElementById('modal-confirm').classList.remove('show');
+}
+function confirmAction() {
+  if (confirmCallback) confirmCallback();
+  closeConfirm();
+}
+
+// ==================== Toast ====================
+function showToast(title, msg) {
+  const t = document.getElementById('toast');
+  t.textContent = title + '\n' + msg;
+  t.style.whiteSpace = 'pre-line';
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 2000);
+}
+
+// ==================== Me: Activity Toggle ====================
+function toggleActivity(el) {
+  const cb = el.querySelector('input[type="checkbox"]');
+  cb.checked = !cb.checked;
+  updateActivityCount();
+}
+function updateActivityCount() {
+  const all = document.querySelectorAll('#page-me input[type="checkbox"]');
+  let count = 0;
+  all.forEach(c => { if (c.checked) count++; });
+  const el = document.getElementById('activity-count');
+  if (el) el.textContent = count;
+}
+
+// ==================== Me: Garmin Login ====================
+function garminLogin() {
+  document.getElementById('me-logged-out').style.display = 'none';
+  document.getElementById('me-logged-in').style.display = 'block';
+  closeModal();
+  showToast('登录成功', 'Garmin Connect 已连接');
+}
+function garminLogout() {
+  document.getElementById('me-logged-out').style.display = 'block';
+  document.getElementById('me-logged-in').style.display = 'none';
+}
+</script>
+
+</body>
+</html>
